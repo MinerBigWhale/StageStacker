@@ -5,12 +5,13 @@ import traceback
 import sys
 import time
 import webbrowser
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+
+from cue_types import Cue, VideoCue, ImageCue, AudioCue, NoteCue, StopCue, FadeCue
 
 VLC_IMPORT_ERROR = ""
 VLC_COMMON_ARGS = (
@@ -47,32 +48,11 @@ except Exception as exc:  # pragma: no cover - optional dependency / native runt
     log_error("Failed to import VLC bindings/runtime", exc)
 
 
-APP_TITLE = "Theater Cue Controller"
+APP_TITLE = "Theater Cue Software"
 APP_VERSION = "0.1.0"
 PROJECT_FILE = "show_cues.json"
 SETTINGS_FILE = "app_settings.json"
 DOCUMENTATION_URL = "https://github.com/"
-
-
-@dataclass
-class Cue:
-    name: str
-    note: str = ""
-    audio_path: str = ""
-    video_path: str = ""
-    repeat: bool = False
-    id: int = field(default_factory=lambda: int(time.time() * 1000))
-
-    @property
-    def media_summary(self) -> str:
-        kinds = []
-        if self.note.strip():
-            kinds.append("Note")
-        if self.audio_path:
-            kinds.append("Audio")
-        if self.video_path:
-            kinds.append("Video")
-        return ", ".join(kinds) if kinds else "Empty"
 
 
 class AudioMixer:
@@ -170,6 +150,8 @@ class VideoSurface:
         self.frame = ttk.LabelFrame(parent, text=title) if framed else tk.Frame(parent, bg="black", bd=0, highlightthickness=0)
         self.canvas = tk.Canvas(self.frame, bg="#101318", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
+        self.frame.pack_propagate(False)
+        self.aspect_ratio = 16 / 9
         self.status_var = tk.StringVar(value="No video loaded")
         self.player = None
         self.instance = None
@@ -189,8 +171,26 @@ class VideoSurface:
                 self.last_error = str(exc)
                 log_error(f"Failed to initialize video surface '{title}'", exc)
 
-        self.frame.bind("<Configure>", self._bind_player)
+        self.frame.bind("<Configure>", self._on_frame_configure)
         self.canvas.bind("<Configure>", self._bind_player)
+
+    def _on_frame_configure(self, event=None) -> None:
+        self._bind_player()
+        self._ensure_aspect_ratio()
+
+    def set_aspect_ratio(self, ratio: float) -> None:
+        self.aspect_ratio = ratio
+        self._ensure_aspect_ratio()
+
+    def _ensure_aspect_ratio(self) -> None:
+        if self.aspect_ratio <= 0:
+            return
+        width = self.frame.winfo_width()
+        if width <= 1:
+            return
+        height = int(width / self.aspect_ratio)
+        self.frame.configure(height=height)
+        self.canvas.config(height=height)
 
     def _bind_player(self, _event=None) -> None:
         if not self.available or not self.player:
@@ -340,6 +340,38 @@ class CueApp:
         self.audio_mixer = AudioMixer()
         self.status_var = tk.StringVar()
         self.show_status("Ready")
+        self.ratio_var = tk.StringVar(value="16:9")
+
+        Cue.register("video", VideoCue)
+        Cue.register("image", ImageCue)
+        Cue.register("audio", AudioCue)
+        Cue.register("note", NoteCue)
+        Cue.register("stop", StopCue)
+        Cue.register("fade", FadeCue)
+
+        self.type_var = tk.StringVar(value="video")
+        self.name_var = tk.StringVar()
+        self.file_path_var = tk.StringVar()
+        self.note_var = tk.StringVar()
+        self.stop_stack_var = tk.BooleanVar()
+        self.stop_video_only_var = tk.BooleanVar()
+        self.trigger_var = tk.StringVar(value="manually")
+        self.delay_min_var = tk.IntVar()
+        self.delay_sec_var = tk.IntVar()
+        self.delay_ms_var = tk.IntVar()
+        self.repeat_var = tk.BooleanVar()
+
+        # Add traces to apply changes immediately when settings are modified
+        self.name_var.trace_add("write", lambda *args: self.apply_editor_changes())
+        self.file_path_var.trace_add("write", lambda *args: self.apply_editor_changes())
+        self.note_var.trace_add("write", lambda *args: self.apply_editor_changes())
+        self.stop_stack_var.trace_add("write", lambda *args: self.apply_editor_changes())
+        self.stop_video_only_var.trace_add("write", lambda *args: self.apply_editor_changes())
+        self.trigger_var.trace_add("write", lambda *args: self.apply_editor_changes())
+        self.delay_min_var.trace_add("write", lambda *args: self.apply_editor_changes())
+        self.delay_sec_var.trace_add("write", lambda *args: self.apply_editor_changes())
+        self.delay_ms_var.trace_add("write", lambda *args: self.apply_editor_changes())
+        self.repeat_var.trace_add("write", lambda *args: self.apply_editor_changes())
 
         self.stage_window = StageWindow(self)
         self._load_settings()
@@ -367,12 +399,13 @@ class CueApp:
             self.show_status("Playback issue: " + " | ".join(problems))
 
     def _build_layout(self) -> None:
-        self.root.columnconfigure(0, weight=3)
-        self.root.columnconfigure(1, weight=4)
-        self.root.rowconfigure(1, weight=1)
+        self.root.columnconfigure(0, weight=1)
+        self.root.columnconfigure(1, weight=0, minsize=450)
+        self.root.rowconfigure(0, weight=1)
+        self.root.rowconfigure(1, weight=0)
 
         timeline_frame = ttk.LabelFrame(self.root, text="Cue Timeline", padding=10)
-        timeline_frame.grid(row=1, column=0, sticky="nsew", padx=(10, 5), pady=(10, 10))
+        timeline_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=(10, 5))
         timeline_frame.rowconfigure(0, weight=1)
         timeline_frame.columnconfigure(0, weight=1)
 
@@ -392,64 +425,177 @@ class CueApp:
         timeline_scroll.grid(row=0, column=1, sticky="ns")
         self.timeline.configure(yscrollcommand=timeline_scroll.set)
 
-        detail_frame = ttk.Frame(self.root, padding=(5, 0, 10, 10))
-        detail_frame.grid(row=1, column=1, sticky="nsew", pady=(10, 0))
+        detail_frame = ttk.Frame(self.root, padding=(5, 0, 10, 10), height=500)
+        detail_frame.grid(row=1, column=0, sticky="sew", pady=(0, 10), padx=(10, 5))
         detail_frame.columnconfigure(0, weight=1)
-        detail_frame.columnconfigure(1, weight=1)
-        detail_frame.rowconfigure(1, weight=1)
+        detail_frame.rowconfigure(0, weight=1)
 
-        editor = ttk.LabelFrame(detail_frame, text="Cue Details", padding=10)
+        editor = ttk.Notebook(detail_frame, height=300)
         editor.grid(row=0, column=0, sticky="nsew")
-        editor.columnconfigure(1, weight=1)
 
-        self.name_var = tk.StringVar()
-        self.repeat_var = tk.BooleanVar()
-        self.audio_var = tk.StringVar()
-        self.video_var = tk.StringVar()
+        settings_tab = ttk.Frame(editor, padding=10)
+        timings_tab = ttk.Frame(editor, padding=10)
+        editor.add(settings_tab, text="Cue Settings")
+        editor.add(timings_tab, text="Timings")
 
-        ttk.Label(editor, text="Cue Name").grid(row=0, column=0, sticky="w")
-        name_entry = ttk.Entry(editor, textvariable=self.name_var)
-        name_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        settings_tab.columnconfigure(1, weight=1)
 
-        ttk.Checkbutton(editor, text="Repeat until stopped", variable=self.repeat_var).grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(10, 0)
-        )
+        ttk.Label(settings_tab, text="Type").grid(row=0, column=0, sticky="w")
+        self.type_combo = ttk.Combobox(settings_tab, textvariable=self.type_var, values=["video", "image", "audio", "note", "stop", "fade"], state="readonly")
+        self.type_combo.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        self.type_combo.bind("<<ComboboxSelected>>", lambda e: self.change_cue_type())
 
-        ttk.Label(editor, text="Audio").grid(row=2, column=0, sticky="w", pady=(10, 0))
-        audio_row = ttk.Frame(editor)
-        audio_row.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
-        audio_row.columnconfigure(0, weight=1)
-        ttk.Entry(audio_row, textvariable=self.audio_var).grid(row=0, column=0, sticky="ew")
-        ttk.Button(audio_row, text="Browse", command=self.pick_audio).grid(row=0, column=1, padx=(6, 0))
+        ttk.Label(settings_tab, text="Name").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        name_entry = ttk.Entry(settings_tab, textvariable=self.name_var)
+        name_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
 
-        ttk.Label(editor, text="Video").grid(row=3, column=0, sticky="w", pady=(10, 0))
-        video_row = ttk.Frame(editor)
-        video_row.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
-        video_row.columnconfigure(0, weight=1)
-        ttk.Entry(video_row, textvariable=self.video_var).grid(row=0, column=0, sticky="ew")
-        ttk.Button(video_row, text="Browse", command=self.pick_video).grid(row=0, column=1, padx=(6, 0))
+        self.file_path_label = ttk.Label(settings_tab, text="File Path")
+        self.file_path_label.grid(row=2, column=0, sticky="w", pady=(10, 0))
+        file_row = ttk.Frame(settings_tab)
+        file_row.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
+        file_row.columnconfigure(0, weight=1)
+        self.file_path_entry = ttk.Entry(file_row, textvariable=self.file_path_var)
+        self.file_path_entry.grid(row=0, column=0, sticky="ew")
+        self.browse_button = ttk.Button(file_row, text="Browse", command=self.pick_file)
+        self.browse_button.grid(row=0, column=1, padx=(6, 0))
 
-        ttk.Label(editor, text="Notes").grid(row=4, column=0, sticky="nw", pady=(10, 0))
-        self.note_text = tk.Text(editor, wrap="word", height=12)
-        self.note_text.grid(row=4, column=1, sticky="nsew", padx=(8, 0), pady=(10, 0))
-        editor.rowconfigure(4, weight=1)
+        self.note_label = ttk.Label(settings_tab, text="Note")
+        self.note_label.grid(row=3, column=0, sticky="nw", pady=(10, 0))
+        self.note_text = tk.Text(settings_tab, wrap="word", height=8)
+        self.note_text.grid(row=3, column=1, sticky="nsew", padx=(8, 0), pady=(10, 0))
+        settings_tab.rowconfigure(3, weight=1)
 
-        action_row = ttk.Frame(editor)
-        action_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        ttk.Button(action_row, text="Apply Changes", command=self.apply_editor_changes).pack(side="left")
-        ttk.Button(action_row, text="Duplicate Cue", command=self.duplicate_selected).pack(side="left", padx=(6, 0))
+        # Media info frame
+        self.info_frame = ttk.LabelFrame(settings_tab, text="Media Info", padding=10)
+        self.info_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.info_label = ttk.Label(self.info_frame, text="")
+        self.info_label.pack(anchor="w")
 
-        monitor = ttk.LabelFrame(detail_frame, text="Preview / Output Monitor", padding=10)
-        monitor.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(10, 0))
+        # Build timings tab
+        self.timings_tab = timings_tab
+        self.timings_tab.columnconfigure(1, weight=1)
+        self.stop_stack_check = ttk.Checkbutton(self.timings_tab, text="Stop Stack", variable=self.stop_stack_var)
+        self.stop_stack_check.grid(row=0, column=0, columnspan=2, sticky="w")
+        self.stop_video_check = ttk.Checkbutton(self.timings_tab, text="Stop Video Stack Only", variable=self.stop_video_only_var)
+        self.stop_video_check.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        ttk.Label(self.timings_tab, text="Trigger").grid(row=2, column=0, sticky="w", pady=(10, 0))
+        trigger_combo = ttk.Combobox(self.timings_tab, textvariable=self.trigger_var, values=["manually", "with previous", "after previous"], state="readonly")
+        trigger_combo.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
+        trigger_combo.bind("<<ComboboxSelected>>", lambda e: self.apply_editor_changes())
+
+        ttk.Label(self.timings_tab, text="Delay").grid(row=3, column=0, sticky="w", pady=(10, 0))
+        delay_frame = ttk.Frame(self.timings_tab)
+        delay_frame.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
+        min_spin = ttk.Spinbox(delay_frame, from_=0, to=59, textvariable=self.delay_min_var, width=5)
+        min_spin.pack(side="left")
+        min_spin.bind("<<Increment>>", lambda e: self.apply_editor_changes())
+        min_spin.bind("<<Decrement>>", lambda e: self.apply_editor_changes())
+        ttk.Label(delay_frame, text="min").pack(side="left", padx=(5, 10))
+        sec_spin = ttk.Spinbox(delay_frame, from_=0, to=59, textvariable=self.delay_sec_var, width=5)
+        sec_spin.pack(side="left")
+        sec_spin.bind("<<Increment>>", lambda e: self.apply_editor_changes())
+        sec_spin.bind("<<Decrement>>", lambda e: self.apply_editor_changes())
+        ttk.Label(delay_frame, text="sec").pack(side="left", padx=(5, 10))
+        ms_spin = ttk.Spinbox(delay_frame, from_=0, to=999, textvariable=self.delay_ms_var, width=5)
+        ms_spin.pack(side="left")
+        ms_spin.bind("<<Increment>>", lambda e: self.apply_editor_changes())
+        ms_spin.bind("<<Decrement>>", lambda e: self.apply_editor_changes())
+        ttk.Label(delay_frame, text="ms").pack(side="left", padx=(5, 0))
+
+        ttk.Checkbutton(self.timings_tab, text="Repeat", variable=self.repeat_var).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        self.update_settings_visibility()
+
+    def update_settings_visibility(self):
+        """Show/hide settings based on selected cue type."""
+        cue = self.get_selected_cue()
+        if cue is None:
+            cue_type = self.type_var.get()
+        else:
+            cue_type = cue.type
+
+        if isinstance(cue, (VideoCue, ImageCue, AudioCue)) or cue_type in ["video", "image", "audio"]:
+            # show file_path
+            self.file_path_label.grid()
+            self.file_path_entry.grid()
+            self.browse_button.grid()
+            # hide note
+            self.note_label.grid_remove()
+            self.note_text.grid_remove()
+            # show info
+            self.info_frame.grid()
+        elif isinstance(cue, NoteCue) or cue_type == "note":
+            # hide file_path
+            self.file_path_label.grid_remove()
+            self.file_path_entry.grid_remove()
+            self.browse_button.grid_remove()
+            # show note
+            self.note_label.grid()
+            self.note_text.grid()
+            # hide info
+            self.info_frame.grid_remove()
+        else:  # stop, fade, or unknown
+            # hide file_path
+            self.file_path_label.grid_remove()
+            self.file_path_entry.grid_remove()
+            self.browse_button.grid_remove()
+            # hide note
+            self.note_label.grid_remove()
+            self.note_text.grid_remove()
+            # hide info
+            self.info_frame.grid_remove()
+
+        monitor = ttk.LabelFrame(self.root, text="Preview / Output Monitor", padding=10)
+        monitor.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(0, 10), pady=(10, 10))
         monitor.columnconfigure(0, weight=1)
-        monitor.rowconfigure(0, weight=4)
-        monitor.rowconfigure(1, weight=0)
+        monitor.rowconfigure(0, weight=0)
+        monitor.rowconfigure(1, weight=4)
+        monitor.rowconfigure(2, weight=0)
+        monitor.rowconfigure(3, weight=0)
+        monitor.rowconfigure(4, weight=0)
+
+        ratio_combo = ttk.Combobox(monitor, textvariable=self.ratio_var, values=["4:3", "16:9", "16:10", "21:9"], state="readonly")
+        ratio_combo.grid(row=0, column=0, sticky="ew", pady=(0,10))
+        ratio_combo.bind("<<ComboboxSelected>>", self.on_ratio_selected)
 
         self.preview_surface = VideoSurface(monitor, "Control Preview")
-        self.preview_surface.frame.grid(row=0, column=0, sticky="nsew")
+        self.preview_surface.frame.grid(row=1, column=0, sticky="new")
+        self.preview_surface.set_aspect_ratio(16 / 9)
+
+        button_frame = ttk.Frame(monitor)
+        button_frame.grid(row=2, column=0, sticky="ew", pady=(10,0))
+        prev_btn = tk.Button(button_frame, text="Previous", command=self.rollback_cue, bg="red", fg="white", height=2)
+        prev_btn.pack(side="top", fill="x", pady=(0,5))
+        next_btn = tk.Button(button_frame, text="Next", command=self.run_next_cue, bg="green", fg="white", height=3)
+        next_btn.pack(side="top", fill="x", pady=(0,10))
+        small_frame = ttk.Frame(button_frame)
+        small_frame.pack(side="top", fill="x")
+        small_frame.columnconfigure(0, weight=1)
+        small_frame.columnconfigure(1, weight=1)
+        small_frame.columnconfigure(2, weight=1)
+        pause_btn = ttk.Button(small_frame, text="⏸", command=self.pause_playback)
+        pause_btn.grid(row=0, column=0, sticky="ew", padx=(0,2))
+        play_btn = ttk.Button(small_frame, text="▶", command=self.resume_playback)
+        play_btn.grid(row=0, column=1, sticky="ew", padx=(2,2))
+        stop_btn = ttk.Button(small_frame, text="⏹", command=self.stop_all)
+        stop_btn.grid(row=0, column=2, sticky="ew", padx=(2,0))
+
+        active_frame = ttk.LabelFrame(monitor, text="Active Medias", padding=10)
+        active_frame.grid(row=3, column=0, sticky="ew", pady=(10,0))
+        self.active_tree = ttk.Treeview(active_frame, columns=("name", "type", "progress", "repeat"), show="headings", height=5)
+        self.active_tree.heading("name", text="Name")
+        self.active_tree.heading("type", text="Type")
+        self.active_tree.heading("progress", text="Progress")
+        self.active_tree.heading("repeat", text="Repeat")
+        self.active_tree.column("name", width=100)
+        self.active_tree.column("type", width=50)
+        self.active_tree.column("progress", width=100)
+        self.active_tree.column("repeat", width=50)
+        self.active_tree.pack(fill="both", expand=True)
 
         meter_frame = ttk.LabelFrame(monitor, text="Audio Output / VU Meter", padding=10)
-        meter_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        meter_frame.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         meter_frame.columnconfigure(0, weight=1)
         self.meter = ttk.Progressbar(meter_frame, orient="horizontal", mode="determinate", maximum=100)
         self.meter.grid(row=0, column=0, sticky="ew")
@@ -523,9 +669,9 @@ class CueApp:
             self._load_from_file(self.project_path)
         else:
             self.cues = [
-                Cue(name="Preset / House Open", note="Opening note to FOH and backstage."),
-                Cue(name="Intro Music", audio_path="", note="Warm intro loop for audience seating.", repeat=True),
-                Cue(name="Show Opener", video_path="", note="First stage video feed."),
+                NoteCue("Preset / House Open", note="Opening note to FOH and backstage."),
+                AudioCue("Intro Music", file_path="", repeat=True),
+                VideoCue("Show Opener", file_path=""),
             ]
 
     def show_status(self, text: str) -> None:
@@ -554,23 +700,75 @@ class CueApp:
             return
         self.selected_index = int(selection[0])
         cue = self.cues[self.selected_index]
+        self.type_var.set(cue.type)
         self.name_var.set(cue.name)
-        self.repeat_var.set(cue.repeat)
-        self.audio_var.set(cue.audio_path)
-        self.video_var.set(cue.video_path)
+        self.file_path_var.set(getattr(cue, 'file_path', ''))
+        self.note_var.set(getattr(cue, 'note', ''))
+        self.stop_stack_var.set(getattr(cue, 'stop_stack', False))
+        self.stop_video_only_var.set(getattr(cue, 'stop_video_only', False))
+        self.trigger_var.set(getattr(cue, 'trigger', 'manually'))
+        self.delay_min_var.set(getattr(cue, 'delay_min', 0))
+        self.delay_sec_var.set(getattr(cue, 'delay_sec', 0))
+        self.delay_ms_var.set(getattr(cue, 'delay_ms', 0))
+        self.repeat_var.set(getattr(cue, 'repeat', False))
         self.note_text.delete("1.0", "end")
-        self.note_text.insert("1.0", cue.note)
+        self.note_text.insert("1.0", getattr(cue, 'note', ''))
+        self.update_media_info(cue)
+        self.update_settings_visibility()
         self.show_status(f"Selected cue: {cue.name}")
 
     def clear_editor(self) -> None:
+        self.type_var.set("video")
         self.name_var.set("")
+        self.file_path_var.set("")
+        self.note_var.set("")
+        self.stop_stack_var.set(False)
+        self.stop_video_only_var.set(False)
+        self.trigger_var.set("manually")
+        self.delay_min_var.set(0)
+        self.delay_sec_var.set(0)
+        self.delay_ms_var.set(0)
         self.repeat_var.set(False)
-        self.audio_var.set("")
-        self.video_var.set("")
         self.note_text.delete("1.0", "end")
+        self.info_label.config(text="")
+        self.update_settings_visibility()
+
+    def get_selected_cue(self) -> Optional[Cue]:
+        """Return the currently selected cue, or None if no cue is selected."""
+        if self.selected_index is None or self.selected_index >= len(self.cues):
+            return None
+        return self.cues[self.selected_index]
+
+    def change_cue_type(self) -> None:
+        """Change the type of the selected cue and update the interface."""
+        if self.selected_index is None:
+            return
+        new_type = self.type_var.get()
+        old_cue = self.cues[self.selected_index]
+        cue_class = Cue.cue_classes.get(new_type, VideoCue)
+        new_cue = cue_class(self.name_var.get().strip() or old_cue.name)
+        # Copy common attributes
+        new_cue.stop_stack = old_cue.stop_stack
+        new_cue.stop_video_only = old_cue.stop_video_only
+        new_cue.trigger = old_cue.trigger
+        new_cue.delay_min = old_cue.delay_min
+        new_cue.delay_sec = old_cue.delay_sec
+        new_cue.delay_ms = old_cue.delay_ms
+        new_cue.repeat = old_cue.repeat
+        # Copy specific attributes if applicable
+        if hasattr(old_cue, 'file_path') and hasattr(new_cue, 'file_path'):
+            new_cue.file_path = old_cue.file_path
+        if hasattr(old_cue, 'note') and hasattr(new_cue, 'note'):
+            new_cue.note = old_cue.note
+        self.cues[self.selected_index] = new_cue
+        self.apply_editor_changes()
+        self.update_settings_visibility()
+        self.update_media_info(new_cue)
+        self.refresh_timeline()
 
     def add_cue(self) -> None:
-        cue = Cue(name=f"Cue {len(self.cues) + 1}")
+        cue_class = Cue.cue_classes.get(self.type_var.get(), VideoCue)
+        cue = cue_class(f"Cue {len(self.cues) + 1}")
         self.cues.append(cue)
         self.selected_index = len(self.cues) - 1
         self.refresh_timeline()
@@ -581,13 +779,18 @@ class CueApp:
         cue = self.get_selected_cue()
         if cue is None:
             return
-        new_cue = Cue(
-            name=f"{cue.name} Copy",
-            note=cue.note,
-            audio_path=cue.audio_path,
-            video_path=cue.video_path,
-            repeat=cue.repeat,
-        )
+        new_cue = cue.__class__(f"{cue.name} Copy")
+        if hasattr(cue, 'file_path'):
+            new_cue.file_path = cue.file_path
+        if hasattr(cue, 'note'):
+            new_cue.note = cue.note
+        new_cue.stop_stack = cue.stop_stack
+        new_cue.stop_video_only = cue.stop_video_only
+        new_cue.trigger = cue.trigger
+        new_cue.delay_min = cue.delay_min
+        new_cue.delay_sec = cue.delay_sec
+        new_cue.delay_ms = cue.delay_ms
+        new_cue.repeat = cue.repeat
         insert_at = (self.selected_index or 0) + 1
         self.cues.insert(insert_at, new_cue)
         self.selected_index = insert_at
@@ -619,33 +822,62 @@ class CueApp:
         if cue is None:
             return
         cue.name = self.name_var.get().strip() or "Untitled Cue"
+        if hasattr(cue, 'file_path'):
+            cue.file_path = self.file_path_var.get().strip()
+        if hasattr(cue, 'note'):
+            cue.note = self.note_text.get("1.0", "end").strip()
+        cue.stop_stack = self.stop_stack_var.get()
+        cue.stop_video_only = self.stop_video_only_var.get()
+        cue.trigger = self.trigger_var.get()
+        cue.delay_min = self.delay_min_var.get()
+        cue.delay_sec = self.delay_sec_var.get()
+        cue.delay_ms = self.delay_ms_var.get()
         cue.repeat = self.repeat_var.get()
-        cue.audio_path = self.audio_var.get().strip()
-        cue.video_path = self.video_var.get().strip()
-        cue.note = self.note_text.get("1.0", "end").strip()
-        self.refresh_timeline()
-        self.show_status(f"Updated cue: {cue.name}")
+        if self.selected_index is not None and self.timeline.exists(str(self.selected_index)):
+            self.timeline.item(str(self.selected_index), values=(cue.name, cue.media_summary, "Yes" if cue.repeat else "No"))
+        self.update_media_info(cue)
 
-    def pick_audio(self) -> None:
+    def on_ratio_selected(self, _event=None) -> None:
+        ratio = self.ratio_var.get()
+        mapping = {"4:3": 4 / 3, "16:9": 16 / 9, "16:10": 16 / 10, "21:9": 21 / 9}
+        self.preview_surface.set_aspect_ratio(mapping.get(ratio, 16 / 9))
+
+    def pick_file(self) -> None:
+        cue = self.get_selected_cue()
+        if cue is not None:
+            cue_type = cue.type
+        else:
+            cue_type = self.type_var.get()
+        if cue_type == "video":
+            filetypes = [("Video Files", "*.mp4 *.mov *.avi *.mkv"), ("All Files", "*.*")]
+        elif cue_type == "image":
+            filetypes = [("Image Files", "*.png *.jpg *.jpeg *.gif *.bmp"), ("All Files", "*.*")]
+        elif cue_type == "audio":
+            filetypes = [("Audio Files", "*.wav *.mp3 *.ogg *.flac *.m4a"), ("All Files", "*.*")]
+        else:
+            filetypes = [("All Files", "*.*")]
         path = filedialog.askopenfilename(
-            title="Select audio file",
-            filetypes=[("Audio Files", "*.wav *.mp3 *.ogg *.flac *.m4a"), ("All Files", "*.*")],
+            title=f"Select {cue_type} file",
+            filetypes=filetypes,
         )
         if path:
-            self.audio_var.set(path)
+            self.file_path_var.set(path)
+            # Update info
+            cue_class = Cue.cue_classes.get(cue_type, VideoCue)
+            temp_cue = cue_class("temp")
+            temp_cue.file_path = path
+            self.update_media_info(temp_cue)
 
-    def pick_video(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Select video file",
-            filetypes=[("Video Files", "*.mp4 *.mov *.avi *.mkv"), ("All Files", "*.*")],
-        )
-        if path:
-            self.video_var.set(path)
-
-    def get_selected_cue(self) -> Optional[Cue]:
-        if self.selected_index is None or self.selected_index >= len(self.cues):
-            return None
-        return self.cues[self.selected_index]
+    def update_media_info(self, cue: Cue) -> None:
+        if isinstance(cue, VideoCue) and cue.file_path:
+            # Placeholder: in real app, extract duration, codec, etc.
+            self.info_label.config(text=f"File: {cue.file_path}\nDuration: N/A\nCodec: N/A\nAuthor: N/A")
+        elif isinstance(cue, ImageCue) and cue.file_path:
+            self.info_label.config(text=f"File: {cue.file_path}\nResolution: N/A\nFormat: N/A")
+        elif isinstance(cue, AudioCue) and cue.file_path:
+            self.info_label.config(text=f"File: {cue.file_path}")
+        else:
+            self.info_label.config(text="")
 
     def run_selected_cue(self) -> None:
         cue = self.get_selected_cue()
@@ -694,46 +926,59 @@ class CueApp:
         cue = self.cues[index]
         self.running_index = index
 
-        started_audio = False
-        if cue.audio_path:
-            started_audio = self.audio_mixer.play(cue)
-            if not self.audio_mixer.available and self.audio_mixer.last_error:
-                self.show_status(f"Audio disabled: {self.audio_mixer.last_error}")
+        if cue.stop_stack:
+            self.stop_all()
+            self.show_status(f"Stopped stack: {cue.name}")
+            return
+        elif cue.stop_video_only:
+            self.preview_surface.stop()
+            self.stage_window.surface.stop()
+            self.current_video_cue_id = None
+            self.show_status(f"Stopped video: {cue.name}")
+            return
 
-        started_video = False
-        if cue.video_path:
-            started_video = self.preview_surface.load_and_play(cue.video_path, loop=cue.repeat)
-            self.stage_window.surface.load_and_play(cue.video_path, loop=cue.repeat)
+        if isinstance(cue, VideoCue) and cue.file_path:
+            started_video = self.preview_surface.load_and_play(cue.file_path, loop=cue.repeat)
+            self.stage_window.surface.load_and_play(cue.file_path, loop=cue.repeat)
             self.current_video_cue_id = cue.id
             self.current_video_started_at = time.time()
             if not self.preview_surface.available and self.preview_surface.last_error:
                 self.show_status(f"Video preview disabled: {self.preview_surface.last_error}")
-        elif cue.note:
+            self.show_status(f"Running video cue: {cue.name}")
+        elif isinstance(cue, AudioCue) and cue.file_path:
+            started_audio = self.audio_mixer.play(cue)
+            if not self.audio_mixer.available and self.audio_mixer.last_error:
+                self.show_status(f"Audio disabled: {self.audio_mixer.last_error}")
+            self.show_status(f"Running audio cue: {cue.name}")
+        elif isinstance(cue, ImageCue) and cue.file_path:
+            # Placeholder: display image in preview
+            self.preview_surface.status_var.set(f"Image: {cue.file_path}")
+            self.stage_window.surface.status_var.set(f"Image: {cue.file_path}")
+            self.show_status(f"Running image cue: {cue.name}")
+        elif isinstance(cue, NoteCue):
             self.preview_surface.status_var.set(cue.note)
             self.stage_window.surface.status_var.set(cue.note)
-
-        self._schedule_media_diagnostics(cue)
-
-        if cue.repeat and not cue.audio_path and cue.video_path:
-            self.show_status(f"Running repeating video cue: {cue.name}")
-        elif cue.repeat and cue.audio_path:
-            self.show_status(f"Running looping cue: {cue.name}")
-        elif cue.audio_path or cue.video_path:
-            media = []
-            if cue.audio_path:
-                media.append("audio ready" if started_audio else "audio pending")
-            if cue.video_path:
-                media.append("video ready" if started_video else "video pending")
-            self.show_status(f"Running cue: {cue.name} ({', '.join(media)})")
+            self.show_status(f"Running note cue: {cue.name}")
+        elif isinstance(cue, StopCue):
+            self.stop_all()
+            self.show_status(f"Stop cue: {cue.name}")
+        elif isinstance(cue, FadeCue):
+            self.preview_surface.stop()
+            self.stage_window.surface.stop()
+            self.current_video_cue_id = None
+            self.show_status(f"Fade cue: {cue.name}")
         else:
             self.show_status(f"Running cue: {cue.name}")
+
+        self._schedule_media_diagnostics(cue)
 
     def stop_current_cue(self) -> None:
         if self.running_index is None or self.running_index >= len(self.cues):
             return
         cue = self.cues[self.running_index]
-        self.audio_mixer.stop(cue)
-        if cue.video_path and self.current_video_cue_id == cue.id:
+        if isinstance(cue, AudioCue):
+            self.audio_mixer.stop(cue)
+        elif isinstance(cue, VideoCue) and self.current_video_cue_id == cue.id:
             self.preview_surface.stop()
             self.stage_window.surface.stop()
             self.current_video_cue_id = None
@@ -750,34 +995,77 @@ class CueApp:
         self.current_video_cue_id = None
         self.show_status("All playback stopped")
 
+    def pause_playback(self) -> None:
+        if self.preview_surface.player:
+            self.preview_surface.player.pause()
+        for player in self.audio_mixer._players.values():
+            if player:
+                player.pause()
+        self.show_status("Playback paused")
+
+    def resume_playback(self) -> None:
+        if self.preview_surface.player:
+            self.preview_surface.player.play()
+        for player in self.audio_mixer._players.values():
+            if player:
+                player.play()
+        self.show_status("Playback resumed")
+
     def _poll_playback(self) -> None:
         self._update_meter()
+        self._update_active_medias()
         self._check_video_loop()
         self._check_sequence_advance()
         self.root.after(200, self._poll_playback)
 
     def _update_meter(self) -> None:
-        level = self.audio_mixer.estimate_level()
-        self.meter["value"] = int(level * 100)
-        active = self.audio_mixer.active_audio_count()
-        if active:
-            self.meter_label.config(text=f"{active} audio layer(s) active")
-        elif self.audio_mixer.available:
-            self.meter_label.config(text="No active audio")
+        level = self.audio_mixer.estimate_level() * 100
+        self.meter["value"] = level
+        if level > 80:
+            self.meter.config(style="Red.Horizontal.TProgressbar")
         else:
-            self.meter_label.config(text="Install VLC + python-vlc for audio playback")
+            self.meter.config(style="Horizontal.TProgressbar")
+        self.meter_label.config(text=f"Audio Volume: {int(level)}%")
+
+    def _update_active_medias(self) -> None:
+        for item in self.active_tree.get_children():
+            self.active_tree.delete(item)
+        # Active video
+        if self.preview_surface.is_playing() and self.running_index is not None:
+            cue = self.cues[self.running_index]
+            if isinstance(cue, VideoCue) and cue.file_path:
+                try:
+                    length = self.preview_surface.player.get_length() / 1000.0
+                    position = self.preview_surface.position_seconds()
+                    progress = position / length if length > 0 else 0
+                    progress_str = f"{int(progress * 100)}%"
+                except:
+                    progress_str = "N/A"
+                self.active_tree.insert("", "end", values=(cue.name, "🎥", progress_str, "🔄" if cue.repeat else ""))
+        # Active audios
+        for cue_id, player in self.audio_mixer._players.items():
+            cue = next((c for c in self.cues if c.id == cue_id), None)
+            if cue and isinstance(cue, AudioCue):
+                try:
+                    length = player.get_length() / 1000.0
+                    position = player.get_time() / 1000.0
+                    progress = position / length if length > 0 else 0
+                    progress_str = f"{int(progress * 100)}%"
+                except:
+                    progress_str = "N/A"
+                self.active_tree.insert("", "end", values=(cue.name, "🔊", progress_str, "🔄" if cue.repeat else ""))
 
     def _check_video_loop(self) -> None:
         if self.running_index is None or self.running_index >= len(self.cues):
             return
         cue = self.cues[self.running_index]
-        if not cue.video_path or not cue.repeat:
+        if not isinstance(cue, VideoCue) or not cue.file_path or not cue.repeat:
             return
 
         preview_playing = self.preview_surface.is_playing()
         if self.preview_surface.available and not preview_playing:
-            self.preview_surface.load_and_play(cue.video_path, loop=True)
-            self.stage_window.surface.load_and_play(cue.video_path, loop=True)
+            self.preview_surface.load_and_play(cue.file_path, loop=True)
+            self.stage_window.surface.load_and_play(cue.file_path, loop=True)
 
     def _check_sequence_advance(self) -> None:
         if not self.sequence_mode or self.running_index is None:
@@ -787,16 +1075,16 @@ class CueApp:
             return
 
         audio_done = True
-        if cue.audio_path and self.audio_mixer.available:
+        if isinstance(cue, AudioCue) and cue.file_path and self.audio_mixer.available:
             audio_done = not self.audio_mixer.is_cue_active(cue.id)
 
         video_done = True
-        if cue.video_path and self.preview_surface.available:
+        if isinstance(cue, VideoCue) and cue.file_path and self.preview_surface.available:
             video_done = not self.preview_surface.is_playing()
 
-        if cue.audio_path and not self.audio_mixer.available:
+        if isinstance(cue, AudioCue) and cue.file_path and not self.audio_mixer.available:
             audio_done = True
-        if cue.video_path and not self.preview_surface.available:
+        if isinstance(cue, VideoCue) and cue.file_path and not self.preview_surface.available:
             video_done = True
 
         if audio_done and video_done:
@@ -879,6 +1167,7 @@ def main() -> None:
     style = ttk.Style(root)
     if "vista" in style.theme_names():
         style.theme_use("vista")
+    style.configure("Red.Horizontal.TProgressbar", background="red")
     app = CueApp(root)
     root.protocol("WM_DELETE_WINDOW", app.close)
     root.mainloop()
