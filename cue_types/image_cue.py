@@ -1,20 +1,48 @@
-from .base_cue import Cue
+from .base_cue import Cue, CueExecutionContext, FieldSpec, TabSpec
 
 
 class ImageCue(Cue):
-    def __init__(self, name: str, id: int = None, **kwargs):
-        super().__init__(name, id, **kwargs)
-        self.file_path = kwargs.get('file_path', "")
+    @classmethod
+    def cue_editor_tabs(cls) -> tuple[TabSpec, ...]:
+        return (
+            TabSpec(
+                "content",
+                "Content",
+                (
+                    FieldSpec(
+                        "file_path",
+                        "Image File",
+                        widget="file",
+                        default="",
+                        filetypes=(("Image Files", "*.png *.jpg *.jpeg *.gif *.bmp"), ("All Files", "*.*")),
+                    ),
+                ),
+            ),
+            TabSpec(
+                "info",
+                "Media Info",
+                (
+                    FieldSpec("media_info", "Media Info", widget="info", persist=False),
+                ),
+            ),
+        )
+
+    @property
+    def image_path(self) -> str:
+        return self.file_path
 
     @property
     def media_summary(self) -> str:
-        return "Image"
-
-    def to_dict(self):
-        d = super().to_dict()
-        d["file_path"] = self.file_path
-        return d
+        return self.path_summary(self.file_path) or "Image"
 
     def get_media_info(self) -> str:
-        # Placeholder: in real app, extract resolution, format, etc.
+        if not self.file_path:
+            return ""
         return f"File: {self.file_path}\nResolution: N/A\nFormat: N/A"
+
+    def _execute(self, context: CueExecutionContext) -> None:
+        if not self.file_path:
+            context.show_status(f"Image cue missing file: {self.name}")
+            return
+        context.show_image(self.file_path)
+        context.show_status(f"Running image cue: {self.name}")

@@ -1,16 +1,23 @@
-from .base_cue import Cue
+from .base_cue import Cue, CueExecutionContext, FieldSpec, TabSpec
 
 
 class NoteCue(Cue):
-    def __init__(self, name: str, id: int = None, **kwargs):
-        super().__init__(name, id, **kwargs)
-        self.note = kwargs.get('note', "")
+    @classmethod
+    def cue_editor_tabs(cls) -> tuple[TabSpec, ...]:
+        return (
+            TabSpec(
+                "note",
+                "Note",
+                (
+                    FieldSpec("note", "Note", widget="text", default="", text_height=8),
+                ),
+            ),
+        )
 
     @property
     def media_summary(self) -> str:
         return "Note"
 
-    def to_dict(self):
-        d = super().to_dict()
-        d["note"] = self.note
-        return d
+    def _execute(self, context: CueExecutionContext) -> None:
+        context.show_text(self.note)
+        context.show_status(f"Running note cue: {self.name}")
