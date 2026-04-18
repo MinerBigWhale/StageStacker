@@ -1,4 +1,5 @@
 from .base_cue import Cue, CueExecutionContext, FieldSpec, TabSpec
+from .media_info import describe_media_file
 
 
 class AudioCue(Cue):
@@ -36,7 +37,7 @@ class AudioCue(Cue):
         return self.path_summary(self.file_path) or "Audio"
 
     def get_media_info(self) -> str:
-        return f"File: {self.file_path}" if self.file_path else ""
+        return describe_media_file(self.file_path)
 
     def _execute(self, context: CueExecutionContext) -> None:
         if not self.file_path:
@@ -55,6 +56,10 @@ class AudioCue(Cue):
         if not self.file_path or not context.audio_mixer.available:
             return True
         return not context.audio_mixer.is_cue_active(self.id)
+
+    def ensure_loop(self, context: CueExecutionContext) -> None:
+        if self.repeat and self.file_path and context.audio_mixer.available and not context.audio_mixer.is_cue_active(self.id):
+            context.play_audio(self)
 
     def active_media_rows(self, context: CueExecutionContext) -> list[tuple[str, str, str, str]]:
         if not context.audio_mixer.is_cue_active(self.id):

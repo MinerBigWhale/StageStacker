@@ -50,11 +50,17 @@ class CueExecutionContext:
         self.preview_surface.stop()
         self.stage_surface.stop()
         self.app.current_video_cue_id = None
+        self.app.active_cue_ids.clear()
+        self.app._cancel_scheduled_runs()
 
     def stop_video_playback(self) -> None:
         self.preview_surface.stop()
         self.stage_surface.stop()
         self.app.current_video_cue_id = None
+        self.app._clear_video_activity()
+
+    def stop_audio_playback(self) -> None:
+        self.audio_mixer.stop_all()
 
     def play_video(self, cue: "Cue") -> bool:
         started_video = self.preview_surface.load_and_play(cue.file_path, loop=cue.repeat)
@@ -98,8 +104,8 @@ class Cue:
             "timings",
             "Timings",
             (
-                FieldSpec("stop_stack", "Stop Stack", widget="checkbox", default=False),
-                FieldSpec("stop_video_only", "Stop Video Stack Only", widget="checkbox", default=False),
+                FieldSpec("stop_audio", "Stop Audio", widget="checkbox", default=False),
+                FieldSpec("stop_video", "Stop Video", widget="checkbox", default=False),
                 FieldSpec(
                     "trigger",
                     "Trigger",
@@ -114,13 +120,13 @@ class Cue:
             ),
         ),
     )
-    _COMMON_KEYS = {"name", "stop_stack", "stop_video_only", "trigger", "delay_min", "delay_sec", "delay_ms", "repeat"}
+    _COMMON_KEYS = {"name", "stop_audio", "stop_video", "trigger", "delay_min", "delay_sec", "delay_ms", "repeat"}
 
     def __init__(self, name: str, id: int = None, **kwargs):
         self.name = name
         self.id = id or int(time.time() * 1000)
-        self.stop_stack = kwargs.get("stop_stack", False)
-        self.stop_video_only = kwargs.get("stop_video_only", False)
+        self.stop_audio = kwargs.get("stop_audio", False)
+        self.stop_video = kwargs.get("stop_video", False)
         self.trigger = kwargs.get("trigger", "manually")
         self.delay_min = kwargs.get("delay_min", 0)
         self.delay_sec = kwargs.get("delay_sec", 0)
@@ -173,8 +179,8 @@ class Cue:
     def editor_state(self) -> Dict[str, Any]:
         state = {
             "name": self.name,
-            "stop_stack": self.stop_stack,
-            "stop_video_only": self.stop_video_only,
+            "stop_audio": self.stop_audio,
+            "stop_video": self.stop_video,
             "trigger": self.trigger,
             "delay_min": self.delay_min,
             "delay_sec": self.delay_sec,
@@ -189,8 +195,8 @@ class Cue:
 
     def apply_editor_state(self, state: Dict[str, Any]) -> None:
         self.name = str(state.get("name", self.name)).strip() or "Untitled Cue"
-        self.stop_stack = bool(state.get("stop_stack", self.stop_stack))
-        self.stop_video_only = bool(state.get("stop_video_only", self.stop_video_only))
+        self.stop_audio = bool(state.get("stop_audio", self.stop_audio))
+        self.stop_video = bool(state.get("stop_video", self.stop_video))
         self.trigger = state.get("trigger", self.trigger)
         self.delay_min = int(state.get("delay_min", self.delay_min))
         self.delay_sec = int(state.get("delay_sec", self.delay_sec))
@@ -210,13 +216,17 @@ class Cue:
     def get_media_info(self) -> str:
         return ""
 
+    @property
+    def delay_total_ms(self) -> int:
+        return max(0, (((self.delay_min * 60) + self.delay_sec) * 1000) + self.delay_ms)
+
     def to_dict(self) -> Dict[str, Any]:
         payload = {
             "name": self.name,
             "type": self.type,
             "id": self.id,
-            "stop_stack": self.stop_stack,
-            "stop_video_only": self.stop_video_only,
+            "stop_audio": self.stop_audio,
+            "stop_video": self.stop_video,
             "trigger": self.trigger,
             "delay_min": self.delay_min,
             "delay_sec": self.delay_sec,
@@ -233,7 +243,8 @@ class Cue:
     def from_dict(cls, data: Dict[str, Any]) -> "Cue":
         type_name = data.get("type", "video")
         cue_class = cls.cue_classes.get(type_name, cls)
-        cue = cue_class(data.get("name", "Untitled Cue"), data.get("id"), **data)
+        kwargs = {key: value for key, value in data.items() if key not in {"name", "id", "type"}}
+        cue = cue_class(data.get("name", "Untitled Cue"), data.get("id"), **kwargs)
         cue.apply_editor_state(data)
         return cue
 
@@ -263,14 +274,10 @@ class Cue:
                 setattr(other, field.key, getattr(self, field.key))
 
     def execute(self, context: CueExecutionContext) -> None:
-        if self.stop_stack:
-            context.stop_all_playback()
-            context.show_status(f"Stopped stack: {self.name}")
-            return
-        if self.stop_video_only:
+        if self.stop_audio:
+            context.stop_audio_playback()
+        if self.stop_video:
             context.stop_video_playback()
-            context.show_status(f"Stopped video: {self.name}")
-            return
         self._execute(context)
 
     def _execute(self, context: CueExecutionContext) -> None:

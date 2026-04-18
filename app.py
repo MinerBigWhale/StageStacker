@@ -5,13 +5,16 @@ import traceback
 import sys
 import time
 import webbrowser
+import zipfile
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from cue_types import Cue, CueExecutionContext, VideoCue, ImageCue, AudioCue, NoteCue, StopCue, FadeCue
+from cue_types import Cue, CueExecutionContext, VideoCue, ImageCue, AudioCue, NoteCue
 
 VLC_IMPORT_ERROR = ""
 VLC_COMMON_ARGS = (
@@ -50,7 +53,7 @@ except Exception as exc:  # pragma: no cover - optional dependency / native runt
 
 APP_TITLE = "Theater Cue Software"
 APP_VERSION = "0.1.0"
-PROJECT_FILE = "show_cues.json"
+PROJECT_FILE = "show_cues.zip"
 SETTINGS_FILE = "app_settings.json"
 DOCUMENTATION_URL = "https://github.com/"
 
@@ -79,6 +82,9 @@ class AudioMixer:
         if not self.available or not cue.audio_path:
             return False
         try:
+            existing = self._players.pop(cue.id, None)
+            if existing is not None:
+                existing.stop()
             player = self._instance.media_player_new()
             media = self._instance.media_new(Path(cue.audio_path).resolve().as_uri())
             if cue.repeat:
@@ -329,6 +335,11 @@ class CueApp:
 
         self.project_path = Path.cwd() / PROJECT_FILE
         self.settings_path = Path.cwd() / SETTINGS_FILE
+        
+        # Initialize temp folder for extracted media and show data
+        self.temp_folder = Path.cwd() / ".theater_cue_temp"
+        self.temp_folder.mkdir(exist_ok=True)
+        
         self.cues: list[Cue] = []
         self.selected_index: Optional[int] = None
         self.running_index: Optional[int] = None
@@ -337,6 +348,11 @@ class CueApp:
         self.current_video_started_at = 0.0
         self.last_show_path: Optional[str] = None
         self._editor_updates_suspended = False
+        self.active_cue_ids: set[int] = set()
+        self._scheduled_run_ids: list[str] = []
+        self._scheduled_indexes: set[int] = set()
+        self._last_executed_index: Optional[int] = None
+        self._processed_after_previous: set[int] = set()  # Track which cues we've scheduled after previous for
 
         self.audio_mixer = AudioMixer()
         self.status_var = tk.StringVar()
@@ -347,14 +363,12 @@ class CueApp:
         Cue.register("image", ImageCue)
         Cue.register("audio", AudioCue)
         Cue.register("note", NoteCue)
-        Cue.register("stop", StopCue)
-        Cue.register("fade", FadeCue)
 
         self.type_var = tk.StringVar(value="video")
         self.editor_field_specs: dict[str, object] = {}
         self.editor_field_vars: dict[str, tk.Variable] = {}
         self.editor_text_widgets: dict[str, tk.Text] = {}
-        self.editor_info_labels: dict[str, ttk.Label] = {}
+        self.editor_info_widgets: dict[str, tk.Text] = {}
         self.current_editor_type: Optional[str] = None
         self.execution_context = CueExecutionContext(self)
 
@@ -494,7 +508,7 @@ class CueApp:
         self.editor_field_specs = {}
         self.editor_field_vars = {}
         self.editor_text_widgets = {}
-        self.editor_info_labels = {}
+        self.editor_info_widgets = {}
 
         for child in self.editor.winfo_children():
             child.destroy()
@@ -519,9 +533,11 @@ class CueApp:
                     self.editor_text_widgets[field.key] = text_widget
                 elif field.widget == "info":
                     ttk.Label(frame, text=field.label).grid(row=row, column=0, sticky="nw")
-                    info = ttk.Label(frame, text="", justify="left")
-                    info.grid(row=row, column=1, sticky="w", padx=(8, 0))
-                    self.editor_info_labels[field.key] = info
+                    info = tk.Text(frame, wrap="word", height=max(12, field.text_height), width=60)
+                    info.grid(row=row, column=1, sticky="nsew", padx=(8, 0))
+                    info.config(state="disabled")
+                    frame.rowconfigure(row, weight=1)
+                    self.editor_info_widgets[field.key] = info
                 elif field.widget == "file":
                     ttk.Label(frame, text=field.label).grid(row=row, column=0, sticky="w")
                     variable = tk.StringVar(value=str(field.default))
@@ -589,8 +605,12 @@ class CueApp:
 
     def _refresh_editor_display_fields(self, cue: Optional[Cue] = None) -> None:
         cue = cue or self.get_selected_cue()
-        for key, label in self.editor_info_labels.items():
-            label.config(text="" if cue is None else cue.get_editor_display_value(key))
+        for key, widget in self.editor_info_widgets.items():
+            widget.config(state="normal")
+            widget.delete("1.0", "end")
+            if cue is not None:
+                widget.insert("1.0", cue.get_editor_display_value(key))
+            widget.config(state="disabled")
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root)
@@ -789,7 +809,21 @@ class CueApp:
             filetypes=list(field.filetypes) or [("All Files", "*.*")],
         )
         if path:
-            self.editor_field_vars[key].set(path)
+            source_path = Path(path)
+            if source_path.exists():
+                # Copy the file to temp folder and use that path
+                media_folder = self.temp_folder / "media"
+                media_folder.mkdir(exist_ok=True)
+                dest_path = media_folder / source_path.name
+                
+                try:
+                    shutil.copy2(source_path, dest_path)
+                    self.editor_field_vars[key].set(str(dest_path.resolve()))
+                except Exception as exc:
+                    log_error(f"Failed to copy media file to temp folder", exc)
+                    messagebox.showerror("Copy failed", f"Could not copy media file:\n{exc}")
+            else:
+                self.editor_field_vars[key].set(path)
 
     def run_selected_cue(self) -> None:
         cue = self.get_selected_cue()
@@ -837,14 +871,22 @@ class CueApp:
         self.apply_editor_changes()
         cue = self.cues[index]
         self.running_index = index
+        self._last_executed_index = index
+        self._processed_after_previous.discard(index)  # Reset the after_previous flag for this cue
+        self._scheduled_indexes.discard(index)
         cue.execute(self.execution_context)
+        self._schedule_triggered_follow_up(index, "with previous")
         self._schedule_media_diagnostics(cue)
+        self.active_cue_ids.add(cue.id)
 
     def stop_current_cue(self) -> None:
         if self.running_index is None or self.running_index >= len(self.cues):
             return
         cue = self.cues[self.running_index]
         cue.stop(self.execution_context)
+        self.active_cue_ids.discard(cue.id)
+        self._processed_after_previous.clear()
+        self._cancel_scheduled_runs()
         self.sequence_mode = False
         self.running_index = None
         self.show_status(f"Stopped cue: {cue.name}")
@@ -853,6 +895,9 @@ class CueApp:
         self.audio_mixer.stop_all()
         self.preview_surface.stop()
         self.stage_window.surface.stop()
+        self.active_cue_ids.clear()
+        self._processed_after_previous.clear()
+        self._cancel_scheduled_runs()
         self.running_index = None
         self.sequence_mode = False
         self.current_video_cue_id = None
@@ -877,7 +922,8 @@ class CueApp:
     def _poll_playback(self) -> None:
         self._update_meter()
         self._update_active_medias()
-        self._check_video_loop()
+        self._check_repeating_cues()
+        self._check_completed_cues()
         self._check_sequence_advance()
         self.root.after(200, self._poll_playback)
 
@@ -989,24 +1035,95 @@ class CueApp:
             for row in cue.active_media_rows(self.execution_context):
                 self.active_tree.insert("", "end", values=row)
 
-    def _check_video_loop(self) -> None:
-        if self.running_index is None or self.running_index >= len(self.cues):
+    def _cancel_scheduled_runs(self) -> None:
+        for after_id in self._scheduled_run_ids:
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+        self._scheduled_run_ids.clear()
+        self._scheduled_indexes.clear()
+
+    def _clear_video_activity(self) -> None:
+        active_ids = set(self.active_cue_ids)
+        for cue in self.cues:
+            if cue.id in active_ids and (cue.video_path or cue.image_path):
+                self.active_cue_ids.discard(cue.id)
+
+    def _schedule_cue_run(self, index: int, delay_ms: int) -> None:
+        if index < 0 or index >= len(self.cues):
             return
-        self.cues[self.running_index].ensure_loop(self.execution_context)
+        cue = self.cues[index]
+        if cue.id in self.active_cue_ids or index in self._scheduled_indexes:
+            return
+        self._scheduled_indexes.add(index)
+
+        after_id = None
+
+        def start_scheduled() -> None:
+            if after_id in self._scheduled_run_ids:
+                self._scheduled_run_ids.remove(after_id)
+            self._scheduled_indexes.discard(index)
+            if index >= len(self.cues):
+                return
+            self.selected_index = index
+            self.timeline.selection_set(str(index))
+            self.timeline.see(str(index))
+            self.on_timeline_select()
+            self._run_cue(index, self.cues[index])
+
+        after_id = self.root.after(max(0, delay_ms), start_scheduled)
+        self._scheduled_run_ids.append(after_id)
+
+    def _schedule_triggered_follow_up(self, index: int, trigger_mode: str) -> None:
+        next_index = index + 1
+        if next_index >= len(self.cues):
+            return
+        next_cue = self.cues[next_index]
+        if next_cue.trigger != trigger_mode:
+            return
+        self._schedule_cue_run(next_index, next_cue.delay_total_ms)
+
+    def _check_repeating_cues(self) -> None:
+        for cue in self.cues:
+            if cue.id in self.active_cue_ids and cue.repeat:
+                cue.ensure_loop(self.execution_context)
+
+    def _check_completed_cues(self) -> None:
+        completed_indices: list[int] = []
+        for index, cue in enumerate(self.cues):
+            if cue.id not in self.active_cue_ids or cue.repeat:
+                continue
+            if cue.is_finished(self.execution_context):
+                completed_indices.append(index)
+
+        for index in completed_indices:
+            cue = self.cues[index]
+            self.active_cue_ids.discard(cue.id)
+            self._try_schedule_after_previous(index)
+
+    def _try_schedule_after_previous(self, index: int) -> None:
+        """Schedule the next cue if it has trigger='after previous'."""
+        if index in self._processed_after_previous:
+            return  # Already processed this cue's after_previous
+        self._processed_after_previous.add(index)
+        self._schedule_triggered_follow_up(index, "after previous")
 
     def _check_sequence_advance(self) -> None:
-        if not self.sequence_mode or self.running_index is None:
+        if not self.sequence_mode or self.running_index is None or self.running_index >= len(self.cues):
             return
         cue = self.cues[self.running_index]
         if cue.repeat or not cue.is_finished(self.execution_context):
             return
         next_index = self.running_index + 1
         if next_index < len(self.cues):
-            self.running_index = next_index
-            self.timeline.selection_set(str(next_index))
-            self.timeline.see(str(next_index))
-            self.on_timeline_select()
-            self._run_cue(next_index, self.cues[next_index])
+            next_cue = self.cues[next_index]
+            if next_cue.trigger == "manually":
+                self.selected_index = next_index
+                self.timeline.selection_set(str(next_index))
+                self.timeline.see(str(next_index))
+                self.on_timeline_select()
+                self._run_cue(next_index, next_cue)
         else:
             self.sequence_mode = False
             self.running_index = None
@@ -1017,8 +1134,8 @@ class CueApp:
         path = filedialog.asksaveasfilename(
             title="Save show file",
             initialfile=PROJECT_FILE,
-            defaultextension=".json",
-            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
+            defaultextension=".zip",
+            filetypes=[("Theater Show Files", "*.zip"), ("All Files", "*.*")],
         )
         if not path:
             return
@@ -1030,7 +1147,7 @@ class CueApp:
     def load_project(self) -> None:
         path = filedialog.askopenfilename(
             title="Load show file",
-            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
+            filetypes=[("Theater Show Files", "*.zip"), ("All Files", "*.*")],
         )
         if not path:
             return
@@ -1053,14 +1170,95 @@ class CueApp:
         self.refresh_timeline()
         self.show_status(f"Loaded last show: {target}")
 
+    def _collect_media_files(self) -> list[Path]:
+        """Collect all media files referenced in cues."""
+        media_files = []
+        seen = set()
+        for cue in self.cues:
+            for path_str in [cue.audio_path, cue.video_path, cue.image_path]:
+                if path_str and path_str not in seen:
+                    path = Path(path_str)
+                    if path.exists():
+                        media_files.append(path)
+                        seen.add(path_str)
+        return media_files
+
     def _save_to_file(self, path: Path) -> None:
-        payload = {"cues": [cue.to_dict() for cue in self.cues]}
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        self.show_status(f"Saved show: {path}")
+        try:
+            # Create temporary directory for ZIP contents
+            with tempfile.TemporaryDirectory() as work_dir:
+                work_path = Path(work_dir)
+                
+                # Save show.json
+                payload = {"cues": [cue.to_dict() for cue in self.cues]}
+                show_json_path = work_path / "show.json"
+                show_json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                
+                # Copy media files and update paths in the JSON
+                media_dir = work_path / "media"
+                media_dir.mkdir(exist_ok=True)
+                
+                media_mapping = {}  # Map original paths to archive paths
+                for cue in self.cues:
+                    for attr in ['audio_path', 'video_path', 'image_path']:
+                        original_path_str = getattr(cue, attr, "")
+                        if original_path_str:
+                            original_path = Path(original_path_str)
+                            if original_path.exists() and str(original_path) not in media_mapping:
+                                dest_path = media_dir / original_path.name
+                                shutil.copy2(original_path, dest_path)
+                                media_mapping[str(original_path)] = str(dest_path.relative_to(work_path))
+                
+                # Update JSON with relative media paths
+                updated_payload = {"cues": []}
+                for cue_dict in payload["cues"]:
+                    updated_cue = dict(cue_dict)
+                    for attr in ['audio_path', 'video_path', 'image_path']:
+                        if cue_dict.get(attr) and cue_dict[attr] in media_mapping:
+                            updated_cue[attr] = media_mapping[cue_dict[attr]]
+                    updated_payload["cues"].append(updated_cue)
+                
+                show_json_path.write_text(json.dumps(updated_payload, indent=2), encoding="utf-8")
+                
+                # Create ZIP archive
+                with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for file_path in work_path.rglob("*"):
+                        if file_path.is_file():
+                            arcname = file_path.relative_to(work_path)
+                            zf.write(file_path, arcname)
+            
+            self.show_status(f"Saved show: {path}")
+        except Exception as exc:
+            log_error(f"Failed to save show file '{path}'", exc)
+            messagebox.showerror("Save failed", f"Could not save show file:\n{exc}")
 
     def _load_from_file(self, path: Path) -> None:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            # Clean up previous temp contents
+            if self.temp_folder.exists():
+                shutil.rmtree(self.temp_folder)
+            self.temp_folder.mkdir(exist_ok=True)
+            
+            # Extract ZIP to temp folder
+            with zipfile.ZipFile(path, 'r') as zf:
+                zf.extractall(self.temp_folder)
+            
+            # Load show.json from temp folder
+            show_json_path = self.temp_folder / "show.json"
+            if not show_json_path.exists():
+                raise FileNotFoundError("show.json not found in archive")
+            
+            payload = json.loads(show_json_path.read_text(encoding="utf-8"))
+            
+            # Update file paths to absolute paths in temp folder
+            for cue_dict in payload.get("cues", []):
+                for attr in ['audio_path', 'video_path', 'image_path']:
+                    if cue_dict.get(attr):
+                        # Convert relative paths to absolute paths in temp folder
+                        rel_path = cue_dict[attr]
+                        abs_path = (self.temp_folder / rel_path).resolve()
+                        cue_dict[attr] = str(abs_path)
+            
             cues = [Cue.from_dict(item) for item in payload.get("cues", [])]
             self.cues = cues or [Cue(name="Cue 1")]
             self.project_path = path

@@ -1,4 +1,5 @@
 from .base_cue import Cue, CueExecutionContext, FieldSpec, TabSpec
+from .media_info import describe_media_file
 
 
 class VideoCue(Cue):
@@ -36,9 +37,7 @@ class VideoCue(Cue):
         return self.path_summary(self.file_path) or "Video"
 
     def get_media_info(self) -> str:
-        if not self.file_path:
-            return ""
-        return f"File: {self.file_path}\nDuration: N/A\nCodec: N/A\nAuthor: N/A"
+        return describe_media_file(self.file_path)
 
     def _execute(self, context: CueExecutionContext) -> None:
         if not self.file_path:
