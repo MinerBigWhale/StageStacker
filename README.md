@@ -1,49 +1,58 @@
-# Theater Cue Software
+# Theater Cue Software - Stage Stacker
 
-This project is a Python desktop prototype for theater cue control.
+This project is a complete prototype for theater cue control with a headless Node.js backend and a responsive React frontend.
+
+## Quick Start (All-in-One)
+
+### Windows
+
+```powershell
+# From repository root
+./start.ps1
+```
+
+This will:
+1. Install backend and frontend dependencies (if needed)
+2. Start the Node.js backend on `http://localhost:8080`
+3. Start the React dev server on `http://localhost:3000`
+
+### macOS / Linux
+
+```bash
+# From repository root
+bash start.sh
+```
+
+## Manual Backend Setup
+
+Use `install.ps1` on Windows or `install.sh` on macOS/Linux to install Node.js, npm, MPV, and required dependencies.
+
+Backend startup (manual):
+
+1. Open a terminal in the repository root.
+2. Run `./install.ps1` on Windows or `./install.sh` on macOS/Linux.
+3. Run `npm start` (starts headless engine on port 8080).
+
+## Manual Frontend Setup
+
+Navigate to the `client/` directory and follow [client/README.md](client/README.md).
+
+```bash
+cd client
+npm install
+npm run dev
+```
+
+The UI will start on `http://localhost:3000`.
 
 It provides:
 
 - A control window with a cue timeline.
-- Per-cue notes, audio, and video assignments.
+- Per-cue audio, and video assignments using plugin based approach.
 - A preview monitor in the control window.
-- A second window for the stage video feed, with fullscreen support.
+- Use MPV for playing Video and Audio Files on a connected display.
+- Support trigger "With Previous" and "After Previous" with an aplied optional delayfor easy automation
 - Looping cues that repeat until stopped.
+- Cue can Stop Audio feed or Video feed indivitualy
 - Mixed audio playback when multiple audio cues are active.
-- Save/load of show files as JSON.
-
-## Runtime
-
-The app uses Tkinter for the interface and can run without extra packages.
-
-Optional media packages:
-
-- `python-vlc` for embedded video preview, stage output, and audio playback.
-
-Install them with:
-
-```powershell
-py -m pip install -r requirements.txt
-```
-
-For `python-vlc`, install VLC media player on Windows as well so the VLC runtime is available.
-
-## Start
-
-```powershell
-py app.py
-```
-
-## How It Works
-
-1. Add cues to the timeline.
-2. Give each cue a note, audio file, video file, or any combination.
-3. Enable `Repeat until stopped` on cues that should loop.
-4. Use `Run Selected` to fire one cue or `Run Sequence` to walk forward cue-by-cue.
-5. Open the stage window and toggle fullscreen for the output feed.
-
-## Notes
-
-- If `python-vlc` is not installed, the app still runs but audio and video playback become placeholder monitors.
-- Audio playback now uses VLC as well, so common formats like WAV, MP3, and OGG should work.
-- Best results come from using common formats like WAV or MP3 for audio and MP4 for video.
+- Save/load of show files as .stack wich is actualy a zip archive containing the media to play and the config as JSON.

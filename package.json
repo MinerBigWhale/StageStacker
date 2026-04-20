@@ -1,0 +1,22 @@
+{
+  "name": "stage-stacker",
+  "version": "0.1.0",
+  "description": "Headless show control engine with plugin-based cue sequencing and dedicated audio/video MPV plugins.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "start:all": "npm run start:all:win",
+    "start:all:win": "powershell -ExecutionPolicy Bypass -File start.ps1",
+    "start:all:unix": "bash start.sh"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.9",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "ws": "^8.13.0"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
