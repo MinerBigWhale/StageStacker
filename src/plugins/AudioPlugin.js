@@ -1,11 +1,13 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const BasePlugin = require('../BasePlugin');
+const ffmpeg = require('fluent-ffmpeg');
 
 class AudioPlugin extends BasePlugin {
+
   constructor(config = {}) {
     super(config);
-    this.file = config.file || '';
+    this._file = config.file || '';
     this.instances = new Map();
     this.wsServer = null;
     this.peakInterval = null;
@@ -13,145 +15,194 @@ class AudioPlugin extends BasePlugin {
     this._completionPromise = new Promise((resolve) => {
       this._completeResolver = resolve;
     });
+    this.metadata = '';
   }
-
+  
+  setStackContext({ mediaRoot, showRoot }) {
+    super.setStackContext({ mediaRoot, showRoot });
+    if (this._file) this.getMetadata();
+  }
+  
   attachWebSocketServer(wsServer) {
     this.wsServer = wsServer;
   }
 
-  _resolveFile(file) {
-    if (!file) {
-      throw new Error('No audio file provided.');
-    }
-
-    if (path.isAbsolute(file)) {
-      return file;
-    }
-
-    return this.resolveMediaAsset(file);
+  get file() {
+    return this._file;
+  }
+  
+  set file(file) {
+    this._file = file;
+    this.getMetadata();
   }
 
+  async getMetadata() {
+    if (!this._file) {
+      this.metadata = 'No audio file provided.';
+      return;
+    }
+
+    try {
+      this.metadata = await new Promise((resolve) => {
+        ffmpeg.ffprobe(this.resolveMediaAsset(this._file), (err, data) => {
+          if (err) {
+            return resolve(`Error retrieving metadata: ${err.message}`);
+          }
+          
+          const format = data.format || {};
+          const audio = data.streams.find(s => s.codec_type === 'audio') || {};
+          
+          const duration = format.duration 
+            ? `${Math.floor(format.duration / 60)}:${Math.floor(format.duration % 60).toString().padStart(2, '0')}` 
+            : 'unknown';
+
+          resolve(`Artist: ${format.tags?.artist || 'unknown'}
+Title: ${format.tags?.title || 'unknown'}
+Album: ${format.tags?.album || 'unknown'}
+Duration: ${duration}
+Format: ${format.format_long_name || 'unknown'}
+Codec: ${audio.codec_long_name || 'unknown'}
+Sample Rate: ${audio.sample_rate ? audio.sample_rate + ' Hz' : 'unknown'}
+Channels: ${audio.channels ? audio.channel_layout + ' (' + audio.channels + ')' : 'unknown'}
+Bit Rate: ${format.bit_rate ? (format.bit_rate / 1000).toFixed(0) + ' kbps' : 'unknown'}`);
+        });
+      });
+    } catch (e) {
+      this.metadata = 'Error: ' + e.message;
+    }
+  }
   _spawnMpv(file, extraArgs = []) {
-    const args = [file, '--quiet', '--force-window=no', '--no-video', ...extraArgs];
+    const args = [
+      file,
+      '--quiet',
+      '--no-video',
+      '--msg-level=cplayer=v', // Augmente la précision pour voir les stats
+      '--term-status-msg=Audio-Out: ${audio-out-peak}', // Affiche les pics dans le flux
+      ...extraArgs
+    ];
     return spawn('mpv', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   }
 
   _registerProcess(instanceId, mpvProcess) {
     this.instances.set(instanceId, mpvProcess);
 
-    mpvProcess.stdout.on('data', (chunk) => {
-      this._broadcastPeakLevels({ sourceId: instanceId, sample: chunk.toString('utf8') });
-    });
+    const handleOutput = (chunk) => {
+      const output = chunk.toString('utf8');
+      
+      // On ne broadcast que si la ligne contient des infos de peak
+      // mpv affiche souvent les peaks sous cette forme avec l'argument term-status-msg
+      if (output.includes('Audio-Out')) {
+        this._broadcastPeakLevels({ 
+          sourceId: instanceId, 
+          sample: output.trim() 
+        });
+      }
+    };
 
-    mpvProcess.stderr.on('data', (chunk) => {
-      this._broadcastPeakLevels({ sourceId: instanceId, sample: chunk.toString('utf8') });
-    });
+    mpvProcess.stdout.on('data', handleOutput);
+    // Souvent mpv écrit les status sur stderr
+    mpvProcess.stderr.on('data', handleOutput);
 
     mpvProcess.on('close', () => {
       this.instances.delete(instanceId);
-      if (!this.instances.size) {
-        clearInterval(this.peakInterval);
-        this.onComplete();
-        this._completeResolver();
+      if (this.instances.size === 0) {
+        if (this.peakInterval) clearInterval(this.peakInterval);
+        this.peakInterval = null;
+        
+        this._started = false; // Important pour pouvoir relancer
+        this.onComplete(); 
+        if (this._completeResolver) this._completeResolver();
       }
     });
   }
 
   _startPeakBroadcast() {
-    if (!this.wsServer || this.peakInterval) {
-      return;
-    }
-
+    if (!this.wsServer || this.peakInterval) return;
     this.peakInterval = setInterval(() => {
       this._broadcastPeakLevels({ type: 'heartbeat' });
     }, 250);
   }
 
   _broadcastPeakLevels(payload) {
-    if (!this.wsServer) {
-      return;
-    }
-
+    if (!this.wsServer) return;
     const message = JSON.stringify({ cueId: this.id, timestamp: Date.now(), payload });
     this.wsServer.clients.forEach((client) => {
-      if (client.readyState === 1) {
-        client.send(message);
-      }
+      if (client.readyState === 1) client.send(message);
     });
   }
 
   async start() {
-    if (!this.file) {
+    if (!this._file) {
       this.onComplete();
-      this._completeResolver();
+      if (this._completeResolver) this._completeResolver();
       return this._completionPromise;
     }
 
-    const resolvedFile = this._resolveFile(this.file);
-    const mpvProcess = this._spawnMpv(resolvedFile, this.loop ? ['--loop=inf'] : []);
+    const resolvedFile = this.resolveMediaAsset(this._file);
+    const args = this.loop ? ['--loop=inf'] : [];
+    
+    const mpvProcess = this._spawnMpv(resolvedFile, args);
     this._registerProcess(this.id, mpvProcess);
     this._startPeakBroadcast();
+    
     return this._completionPromise;
   }
 
-  stop() {
-    this.instances.forEach((mpvProcess) => {
-      mpvProcess.kill('SIGTERM');
-    });
-  }
-
-  stopAudioOnly() {
-    this.stop();
-  }
-
-  stopVideoOnly() {
-    // No-op: this plugin controls audio only.
+  async stop() {
+    this.instances.forEach((proc) => proc.kill('SIGTERM'));
   }
 
   serialize() {
+    let output = super.serialize();
+    output.type = 'AudioPlugin';
+    output.feeds = { video: false, audio: true};
     return {
-      type: 'AudioPlugin',
-      id: this.id,
-      name: this.name,
-      triggerType: this.triggerType,
-      delay: this.delay,
+      ...output,
+      file: this._file,
       loop: this.loop,
-      file: this.file,
-      previousCueId: this.previousCueId,
     };
+  }
+
+  
+  getUicolor() {    
+    return '#00348d';  ;
+  }
+  
+  getUiIcon() {    
+    return '🔊';
   }
 
   getUIConfig() {
     return {
-      fields: [
+      tabs: [
+        ...super.getUIConfig().tabs,
         {
-          key: 'triggerType',
-          label: 'Trigger',
-          type: 'select',
-          options: [
-            { value: 'with_previous', label: 'With Previous' },
-            { value: 'after_previous', label: 'After Previous' },
+          label: 'Audio Content',
+          fields: [
+            {
+              key: 'file',
+              label: 'Audio File',
+              type: 'filePicker',
+              accept: 'audio/*',
+            },
+            {
+              key: 'loop',
+              label: 'Loop Audio',
+              type: 'toggle',
+            }
           ],
         },
         {
-          key: 'delay',
-          label: 'Delay (ms)',
-          type: 'number',
-          min: 0,
-          step: 100,
-        },
-        {
-          key: 'loop',
-          label: 'Loop Audio',
-          type: 'toggle',
-        },
-        {
-          key: 'file',
-          label: 'Audio File',
-          type: 'filePicker',
-          accept: 'audio/*',
-        },
-      ],
+          label: 'Audio Info',
+          fields: [
+            {
+              key: 'metadata',
+              label: 'Metadata',
+              type: 'info',
+            }
+          ],
+        }
+      ]
     };
   }
 }

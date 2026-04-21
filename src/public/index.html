@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stage Stacker Control</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>Stage Stacker <span>v0.1.0</span></h1>
+        <div id="status-bar">
+            Statut : <span id="status">En attente</span>
+        </div>
+    </header>
+
+    <main>
+        <section class="sidebar">
+            <button id="btn-new" class="btn-primary">+ Nouveau Show</button>
+            <h3>Stacks disponibles</h3>
+            <div id="stack-list">Chargement...</div>
+        </section>
+
+        <section class="content">
+            <div id="show-info">
+                <h2 id="show-name">Aucun show chargé</h2>
+                <p id="show-details"></p>
+            </div>
+            <div id="cues-container" class="cues-grid">
+                <!-- Les Cues s'afficheront ici -->
+            </div>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>

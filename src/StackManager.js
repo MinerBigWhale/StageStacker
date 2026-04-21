@@ -15,7 +15,7 @@ class StackManager {
     const showConfig = JSON.parse(fs.readFileSync(showJsonPath, 'utf8'));
     return {
       showConfig,
-      mediaRoot: path.join(extractDir, 'media'),
+      mediaRoot: extractDir,
       extractRoot: extractDir,
     };
   }
@@ -28,7 +28,7 @@ class StackManager {
       if (!fs.existsSync(sourcePath)) {
         throw new Error(`Media file not found: ${sourcePath}`);
       }
-      zip.addLocalFile(sourcePath, 'media', path.basename(sourcePath));
+      zip.addLocalFile(sourcePath, null, path.basename(sourcePath));
     });
 
     zip.writeZip(destPath);
@@ -36,24 +36,31 @@ class StackManager {
   }
 
   static resolveMediaPath(extractRoot, filename) {
-    return path.resolve(extractRoot, 'media', filename);
+    return path.resolve(extractRoot, filename);
   }
 
-  // New methods for show state management
-  static createShowConfig(cues) {
-    return {
-      version: '1.0',
-      name: 'Stage Stacker Show',
-      created: new Date().toISOString(),
-      cues: cues.map(cue => cue.serialize()),
-    };
-  }
+  static createNewStack(name = 'New Stage Stacker Show') {
+  const showConfig = {
+    id: `show-${require('crypto').randomUUID().split('-')[0]}`,
+    name: name,
+    version: '1.0.0',
+    created: new Date().toISOString(),
+    modified: new Date().toISOString(),
+    cues: []
+  };
 
-  static async saveShowToStack(cues, destPath) {
+  return {
+    showConfig,
+    cues: [],
+    mediaRoot: null,
+    extractRoot: null
+  };
+}
+  static async saveShowToStack(loadedStack, destPath) {
     // Collect all media files referenced by cues
     const mediaFiles = new Set();
 
-    cues.forEach(cue => {
+    for (const cue of loadedStack.cues) {
       if (cue.file) {
         // Resolve the full path to the media file
         const mediaPath = cue.resolveMediaAsset ? cue.resolveMediaAsset(cue.file) : cue.file;
@@ -61,9 +68,16 @@ class StackManager {
           mediaFiles.add(mediaPath);
         }
       }
-    });
+    };
 
-    const showConfig = this.createShowConfig(cues);
+    const showConfig = { 
+      id: loadedStack.showConfig.id,
+      name: loadedStack.showConfig.name,
+      version: loadedStack.showConfig.version,
+      created: loadedStack.showConfig.created,
+      modified: new Date().toISOString(),
+      cues: loadedStack.cues.map(cue => cue.serialize()) 
+    };
     await this.packageStack(showConfig, Array.from(mediaFiles), destPath);
     return destPath;
   }
