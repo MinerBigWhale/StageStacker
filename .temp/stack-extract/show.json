@@ -1,22 +1,28 @@
 {
-  "version": "1.0",
   "name": "Stage Stacker Show",
+  "version": "1.0",
   "created": "2026-04-20T10:45:19.752Z",
+  "modified": "2026-04-21T09:59:59.851Z",
   "cues": [
     {
-      "type": "VideoPlugin",
       "id": "cue-1713607200000-456",
-      "order": 0,
+      "type": "VideoPlugin",
       "name": "Opening Scene",
       "triggerType": "with_previous",
       "delay": 0,
       "loop": false,
-      "file": "file_example_MP4_1280_10MG.mp4"
+      "stopVideo": false,
+      "stopAudio": false,
+      "feeds": {
+        "video": true,
+        "audio": true
+      },
+      "file": "file_example_MP4_1280_10MG.mp4",
+      "muted": false
     },
     {
       "type": "AudioPlugin",
       "id": "cue-1713607201000-789",
-      "order": 1,
       "name": "Background Music",
       "triggerType": "after_previous",
       "delay": 500,
@@ -24,14 +30,20 @@
       "file": "idoberg-relaxing-guitar-loop-v5-245859.mp3"
     },
     {
-      "type": "VideoPlugin",
       "id": "cue-1713607202000-321",
-      "order": 2,
+      "type": "VideoPlugin",
       "name": "Looped Video",
       "triggerType": "with_previous",
       "delay": 0,
       "loop": true,
-      "file": "3s0F.mp4"
+      "stopVideo": false,
+      "stopAudio": false,
+      "feeds": {
+        "video": true,
+        "audio": true
+      },
+      "file": "3s0F.mp4",
+      "muted": false
     }
   ]
 }
