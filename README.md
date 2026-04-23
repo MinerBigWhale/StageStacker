@@ -1,58 +1,69 @@
-# Theater Cue Software - Stage Stacker
+# Stage Stacker
 
-This project is a complete prototype for theater cue control with a headless Node.js backend and a responsive React frontend.
+**Stage Stacker** est un système de contrôle de show multimédia (Cues audio et vidéo) conçu pour le spectacle vivant et la régie technique. Il permet d'organiser des médias dans une timeline dynamique, de gérer les enchaînements automatiques et de diffuser en plein écran via le moteur **MPV**.
 
-## Quick Start (All-in-One)
+---
 
-### Windows
+## Fonctionnalités Clés
 
-```powershell
-# From repository root
-./start.ps1
-```
+### Gestion de Stack & Médias
+- **Format .stack** : Archive complète (ZIP) contenant le fichier `show.json` et les médias associés.
+- **Auto-Pruning** : Lors de l'enregistrement, le système n'inclut que les médias réellement utilisés dans les Cues pour optimiser la taille des fichiers.
+- **Sélecteur de fichiers** : Upload direct de fichiers via l'interface vers le dossier média de la stack.
 
-This will:
-1. Install backend and frontend dependencies (if needed)
-2. Start the Node.js backend on `http://localhost:8080`
-3. Start the React dev server on `http://localhost:3000`
+### Moteur de Playback (Engine)
+- **Chaînage intelligent** :
+  - `Manually` : Attend une action de l'utilisateur.
+  - `With Previous` : Se déclenche en même temps que la cue précédente (avec délai).
+  - `After Previous` : Attend la fin réelle du média précédent pour se lancer.
+- **Metadata Auto-Sync** : Extraction automatique de la durée, du codec et des résolutions via FFmpeg (ffprobe).
 
-### macOS / Linux
+### Diffusion & Blackout
+- **Mode Plein Écran** : Activation globale du mode "ON AIR" avec gestion du numéro d'écran (1 à 4).
+- **Blackout Persistant** : Un fond noir MPV couvre l'écran de sortie pour éviter de voir le bureau de l'ordinateur entre deux vidéos.
+- **Propagateur de signal** : L'Engine transmet l'état plein écran dynamiquement à chaque plugin.
+
+### Interface Utilisateur (UI)
+- **Timeline Waterfall** : Visualisation en cascade de la séquence temporelle basée sur les durées réelles.
+- **Édition Dynamique** : Panneaux de configuration en onglets générés dynamiquement par les plugins.
+- **Grid-Layout** : Interface fluide et moderne utilisant CSS Grid.
+
+---
+
+## Prérequis
+
+*   **Node.js** (v16+)
+*   **MPV Player** (Installé et ajouté au PATH système)
+*   **FFmpeg / FFprobe** (Installé pour l'analyse des médias)
+
+---
+
+## Installation & Lancement
 
 ```bash
-# From repository root
-bash start.sh
-```
+# 1. Cloner le projet
+git clone https://github.com/MinerBigWhale/StageStacker.git
 
-## Manual Backend Setup
-
-Use `install.ps1` on Windows or `install.sh` on macOS/Linux to install Node.js, npm, MPV, and required dependencies.
-
-Backend startup (manual):
-
-1. Open a terminal in the repository root.
-2. Run `./install.ps1` on Windows or `./install.sh` on macOS/Linux.
-3. Run `npm start` (starts headless engine on port 8080).
-
-## Manual Frontend Setup
-
-Navigate to the `client/` directory and follow [client/README.md](client/README.md).
-
-```bash
-cd client
+# 2. Installer les dépendances
 npm install
-npm run dev
+npm start
+```
+Accédez à l'interface sur : `http://localhost:3000`
+
+---
+
+# Structure du Projet
+
+```text
+├── plugins/           # Logique des Plugins (Audio, Video, Base)
+├── public/            # Interface Web (HTML, CSS, JS)
+├── stacks/            # Stockage des fichiers .stack
+├── .temp/             # Dossier d'extraction temporaire
+├── BasePlugin.js      # Classe parente des cues
+├── PlaybackEngine.js  # Chef d'orchestre du show
+├── StackManager.js    # Gestionnaire de fichiers et d'archives
+└── index.js           # API Express et serveur WebSocket
 ```
 
-The UI will start on `http://localhost:3000`.
 
-It provides:
 
-- A control window with a cue timeline.
-- Per-cue audio, and video assignments using plugin based approach.
-- A preview monitor in the control window.
-- Use MPV for playing Video and Audio Files on a connected display.
-- Support trigger "With Previous" and "After Previous" with an aplied optional delayfor easy automation
-- Looping cues that repeat until stopped.
-- Cue can Stop Audio feed or Video feed indivitualy
-- Mixed audio playback when multiple audio cues are active.
-- Save/load of show files as .stack wich is actualy a zip archive containing the media to play and the config as JSON.
