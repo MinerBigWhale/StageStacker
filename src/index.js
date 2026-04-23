@@ -60,23 +60,29 @@ function broadcast(message) {
 /**
  * POST /api/stack/new
  */
-app.post('/api/stack/new', (req, res) => {
-  // On crée la structure via le manager
-  loadedStack = StackManager.createNewStack(req.body.name);
+app.post('/api/stack/new', async (req, res) => {
+  try { 
+    extractDir = path.join(__dirname, '../.temp/stack-extract');
+    if (fs.existsSync(extractDir)) {
+      await fs.promises.rm(extractDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(extractDir, { recursive: true });
+    loadedStack = await StackManager.createNewStack(req.body.name, extractDir);
+    engine.setContext(loadedStack); 
+    loadedStack.cues.forEach(cue => engine.registerCue(cue));
 
-  // On notifie les clients via WebSocket
-  broadcast({ 
-    type: 'stack:loaded', 
-    data: {
+    const response = {
+      success: true,
       showConfig: loadedStack.showConfig,
-      cuesCount: 0
-    } 
-  });
+      cuesCount: loadedStack.cues.length,
+      cues: loadedStack.cues.map((cue, index) => ({...cue.serialize(), order: index})),
+    };
 
-  res.json({
-    success: true,
-    showConfig: loadedStack.showConfig
-  });
+    broadcast({ type: 'stack:loaded', data: response });
+    res.json(response);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.get('/api/stack/load', (req, res) => {
@@ -90,7 +96,7 @@ app.get('/api/stack/load', (req, res) => {
 });
 
 app.get('/api/stack/load/:stack', async (req, res) => {
-  try {
+  try { 
     const stackPath = path.join(__dirname, '../stacks', req.params.stack);
     if (!fs.existsSync(stackPath)) return res.status(404).json({ error: 'Not found' });
 
@@ -119,7 +125,33 @@ app.get('/api/stack/load/:stack', async (req, res) => {
   }
 });
 
+app.get('/api/stack/refresh', (req, res) => {
+  if (!loadedStack) return res.status(400).send('No stack loaded');
+  res.json({ success: true, showConfig: loadedStack.showConfig, cuesCount: loadedStack.cues.length, cues: loadedStack.cues.map((cue, index) => ({...cue.serialize(), order: index})) });
+});
+
 app.post('/api/stack/save/:stack', async (req, res) => {
+  if (!loadedStack) return res.status(400).send('No stack loaded');
+  try {
+    const stackPath = path.join(__dirname, '../stacks', req.params.stack);
+    await StackManager.saveShowToStack(loadedStack, stackPath);
+    res.json({ success: true, message: 'Saved' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/stack/delete/:stack', async (req, res) => {
+  try {
+    const stackPath = path.join(__dirname, '../stacks', req.params.stack);
+    await StackManager.deleteStack(stackPath);
+    res.json({ success: true, message: 'Deleted' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/stack/save/', async (req, res) => {
   if (!loadedStack) return res.status(400).send('No stack loaded');
   try {
     const stackPath = path.join(__dirname, '../stacks', req.params.stack);
@@ -134,7 +166,7 @@ app.post('/api/stack/save/:stack', async (req, res) => {
  * CUE CONTROL ROUTES
  */
 
-app.post('/api/stack/cues/:cueId/trigger', async (req, res) => {
+app.post('/api/engine/:cueId/trigger', async (req, res) => {
   const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
   if (!cue) return res.status(404).send('Cue not found');
 
@@ -144,7 +176,7 @@ app.post('/api/stack/cues/:cueId/trigger', async (req, res) => {
   res.json({ success: true, message: `Forçage de ${cue.name}` });
 });
 
-app.post('/api/stack/cues/:cueId/stop', async (req, res) => {
+app.post('/api/engine/:cueId/stop', async (req, res) => {
   const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
   if (cue && cue.stop) {
     await cue.stop();
@@ -154,11 +186,16 @@ app.post('/api/stack/cues/:cueId/stop', async (req, res) => {
   }
 });
 
-app.get('/api/stack/activecues', (req, res) => {
+app.get('/api/engine/activecues', (req, res) => {
   res.json({ 
     success: true, 
     cues: Array.from(engine.activeCues.values()).map(c => c.serialize()) 
   });
+});
+
+app.post('/api/engine/stop', async (req, res) => {
+  await engine.stopAll();
+  res.json({ success: true, message: 'All cues stopped' });
 });
 
 /** 
@@ -171,22 +208,50 @@ app.get('/api/stack/cues/:cueId/uiconfig', (req, res) => {
   res.json({ success: true, config: cue.getUIConfig() });
 });
 
+app.post('/api/stack/upload', (req, res, next) => {
+  if (!extractDir) return res.status(400).json({ error: 'No stack loaded' });
+  
+  // On génère le middleware à la volée pour le dossier actuel
+  const upload = StackManager.getUploadMiddleware(extractDir).single('file');
+  
+  upload(req, res, (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true, filename: req.file.originalname });
+  });
+});
+
+app.get('/api/stack/cues/:cueId/config/:key', (req, res) => {
+  const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
+  if (!cue) return res.status(404).send('Cue not found');
+  const value = cue.getConfigFields(req.params.key);
+  res.json({ success: true, key: req.params.key, value });
+});
+
 app.post('/api/stack/cues/:cueId/config/:key', async (req, res) => {
   const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
   if (!cue) return res.status(404).send('Cue not found');
 
   try {
     cue.setConfigFields(req.params.key, req.body.value);
-    
-    // Refresh metadata if file changes
-    if (req.params.key === 'file' && cue.getMetadata) {
-      await cue.getMetadata();
-    }
 
     res.json({ success: true, key: req.params.key, value: req.body.value });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+app.post('/api/stack/cues/add', (req, res) => {
+  extractDir = path.join(__dirname, '../.temp/stack-extract');
+  const { type } = req.body;
+  const newCue = StackManager.addCue(loadedStack, type, extractDir);
+  engine.registerCue(newCue); // Lier à l'engine
+  res.json({ success: true, cue: newCue.serialize() });
+});
+
+app.post('/api/stack/cues/move', (req, res) => {
+  const { from, to } = req.body;
+  StackManager.moveCue(loadedStack, from, to);
+  res.json({ success: true });
 });
 
 /**
@@ -199,6 +264,23 @@ app.get('/health', (req, res) => {
     stackLoaded: !!loadedStack,
     timestamp: new Date().toISOString(),
   });
+});
+
+/**
+ * GET /api/display/fullscreen/:active/:num
+ * Toggle fullscreen playback and select the screen too (1 à 4) 0=all
+ */
+app.get('/api/display/fullscreen/:active/:num', (req, res) => {
+  if (req.params.active === 'false') {
+    engine.toggleFullscreen(false);
+    return res.json({ success: true, fullscreen: false, screen: engine.fullscreenNum, message: '[Engine] Fullscreen display deactivated' });
+  } 
+  const num = parseInt(req.params.num);
+  if (isNaN(num) || num < 0 || num > 4) {
+    return res.status(400).json({ error: 'Invalid display number', fullscreen: engine.isFullscreen, screen: engine.fullscreenNum });
+  }
+  engine.toggleFullscreen(true, num);
+    return res.json({ success: true, fullscreen: true, screen: num, message: `[Engine] Fullscreen display ${num} activated` });
 });
 
 /**

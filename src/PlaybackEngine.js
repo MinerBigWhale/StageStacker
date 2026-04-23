@@ -1,4 +1,7 @@
 const EventEmitter = require('events');
+const kill = require('tree-kill');
+const { spawn } = require('child_process');
+const path = require('path');
 
 class PlaybackEngine extends EventEmitter {
   constructor(wss = null) {
@@ -6,7 +9,65 @@ class PlaybackEngine extends EventEmitter {
     this.wss = wss;
     this.activeCues = new Map();
     this.context = null; 
+    this.isFullscreen = false;
+    this.fullscreenNum = null;
+    this.blackoutProcess = null;
   }
+
+  toggleFullscreen(Active=true, ScrennNum = 1) {
+    this.isFullscreen = Active;
+    if (this.isFullscreen) {
+        this.fullscreenNum = ScrennNum;
+        const args = [];
+        if (Active) args.push('--fullscreen');
+        if (ScrennNum) args.push('--fs-screen=' + (ScrennNum ? ScrennNum - 1 : 'all'));
+        this._showBlackout(args);
+    } else {
+        this._hideBlackout(); 
+    }    
+    // Notifier le front-end via WebSocket
+    this.broadcast({ type: 'engine:fullscreen', value: this.isFullscreen });
+  }
+
+  
+  _showBlackout(extraArgs = []) {
+   
+    console.log(`[Engine] Activating blackout on screen ${this.fullscreenNum || 'all'}`);
+    if (this.blackoutProcess) return;
+    this.blackoutProcess = spawn('mpv', [
+      '--force-window=yes',
+      '--background-color=#000000',
+      '--idle=yes',
+      '--keep-open=yes',
+      '--player-operation-mode=pseudo-gui',
+      '--no-osc',
+      '--no-osd-bar',
+      '--title=STAGE-BLACKOUT',
+      ...extraArgs
+    ]);
+
+
+    this.blackoutProcess.stderr.on('data', (data) => {
+        console.error(`[MPV Error]: ${data.toString()}`);
+    });
+
+    this.blackoutProcess.on('close', (code) => {
+        console.warn(`[WARNING] Blackout closed (Exit Code: ${code})`);
+        this.blackoutProcess = null;
+        this.isFullscreen = false;
+        this.broadcast({ type: 'engine:fullscreen', value: false });
+    });
+  }
+
+  _hideBlackout() {
+    if (this.blackoutProcess) {
+      kill(this.blackoutProcess.pid, 'SIGTERM', (err) => {
+        if (err) console.error(`Error stopping blackout process ${this.blackoutProcess.pid}:`, err);
+      });
+      this.blackoutProcess = null;
+    }
+  }
+  
 
   /**
    * Enregistre une Cue et lui donne accès à l'engine
@@ -70,6 +131,7 @@ class PlaybackEngine extends EventEmitter {
     });
     await Promise.all(stopPromises);
     this.activeCues.clear();
+    console.log('[Engine] All cues stopped');
     this.broadcast({ type: 'engine:all_stopped' });
   }
 

@@ -1,8 +1,19 @@
-const AdmZip = require('adm-zip');
+const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
+const AdmZip = require('adm-zip');
+
 
 class StackManager {
+
+  static getUploadMiddleware(extractDir) {
+    const storage = multer.diskStorage({
+      destination: (req, file, cb) => cb(null, extractDir),
+      filename: (req, file, cb) => cb(null, file.originalname)
+    });
+    return multer({ storage });
+  }
+
   static async extractStack(stackPath, extractDir) {
     const zip = new AdmZip(stackPath);
     zip.extractAllTo(extractDir, true);
@@ -39,23 +50,24 @@ class StackManager {
     return path.resolve(extractRoot, filename);
   }
 
-  static createNewStack(name = 'New Stage Stacker Show') {
-  const showConfig = {
-    id: `show-${require('crypto').randomUUID().split('-')[0]}`,
-    name: name,
-    version: '1.0.0',
-    created: new Date().toISOString(),
-    modified: new Date().toISOString(),
-    cues: []
-  };
+  static async createNewStack(name = 'New Stage Stacker Show', extractDir) {
+    const showConfig = {
+      id: `show-${require('crypto').randomUUID().split('-')[0]}`,
+      name: name,
+      version: '1.0.0',
+      created: new Date().toISOString(),
+      modified: new Date().toISOString(),
+      cues: []
+    };
 
-  return {
-    showConfig,
-    cues: [],
-    mediaRoot: null,
-    extractRoot: null
-  };
-}
+    return {
+      showConfig,
+      cues: [],
+      mediaRoot: extractDir ,
+      extractRoot: extractDir ,
+    };
+  }
+
   static async saveShowToStack(loadedStack, destPath) {
     // Collect all media files referenced by cues
     const mediaFiles = new Set();
@@ -81,9 +93,19 @@ class StackManager {
     await this.packageStack(showConfig, Array.from(mediaFiles), destPath);
     return destPath;
   }
+   
+  static async deleteStack(stackPath) {
+    if (fs.existsSync(stackPath)) {
+      await fs.promises.rm(stackPath, { recursive: true, force: true });
+      console.log(`Stack deleted: ${stackPath}`);
+      return true;
+    }
+    return false;
+  }
 
   static async loadShowFromStack(stackPath, extractDir) {
     const { showConfig, mediaRoot, extractRoot } = await this.extractStack(stackPath, extractDir);
+    showConfig.filename = path.basename(stackPath);
 
     // Reconstruct cues from show config
     const cues = showConfig.cues.map(cueData => {
@@ -103,6 +125,28 @@ class StackManager {
       mediaRoot,
       extractRoot,
     };
+  }
+
+  static addCue(loadedStack, type, extractDir) {
+    const CueClass = this.cueClasses[type];
+    if (!CueClass) throw new Error(`Type ${type} inconnu`);
+    
+    const newCue = new CueClass({
+      type: type,
+      name: `New ${type} Cue`,
+      triggerType: 'manually',
+      delay: 0,
+    });
+    newCue.setStackContext({ mediaRoot: extractDir, showRoot: extractDir });
+      
+    loadedStack.cues.push(newCue);
+    return newCue;
+  }
+
+  static moveCue(loadedStack, fromIndex, toIndex) {
+    if (toIndex < 0 || toIndex >= loadedStack.cues.length) return;
+    const [removed] = loadedStack.cues.splice(fromIndex, 1);
+    loadedStack.cues.splice(toIndex, 0, removed);
   }
 
   static getCueClass(type) {

@@ -9,29 +9,56 @@
 <body>
     <header>
         <h1>Stage Stacker <span>v0.1.0</span></h1>
-        <div id="status-bar">
-            Statut : <span id="status">En attente</span>
+        <div id="status-bar">Statut : <span id="status">En attente</span></div>
+        <div class="display-controls">
+            <select id="screen-selector">
+                <option value="0">Tous les écrans</option>
+                <option value="1">Écran 1</option>
+                <option value="2">Écran 2</option>
+                <option value="3">Écran 3</option>
+                <option value="4">Écran 4</option>
+            </select>
+            <button id="btn-fullscreen-toggle" onclick="handleFullscreenToggle()" class="btn-off">
+                OFF AIR
+            </button>
+            <button id="btn-stopall" onclick="stopall()" class="btn-secondary">STOP ALL</button>
         </div>
     </header>
 
     <main>
         <section class="sidebar">
-            <button id="btn-new" class="btn-primary">+ Nouveau Show</button>
+            <button id="btn-new" class="btn-primary" style="margin-bottom: 10px;" onclick="createStack()">+ Nouveau Show</button>
+            <button id="btn-save" class="btn-secondary" style="margin-bottom: 10px;" onclick="saveStack()">Enregistrer</button>
             <h3>Stacks disponibles</h3>
             <div id="stack-list">Chargement...</div>
+            <div class="add-controls">
+                <button onclick="addCue('VideoPlugin')">+ Vidéo</button>
+                <button onclick="addCue('AudioPlugin')">+ Audio</button>
+            </div>
+
         </section>
 
         <section class="content">
             <div id="show-info">
-                <h2 id="show-name">Aucun show chargé</h2>
-                <p id="show-details"></p>
+                <h2>Aucun show chargé</h2>
             </div>
-            <div id="cues-container" class="cues-grid">
-                <!-- Les Cues s'afficheront ici -->
+
+            <div class="cue-grid-container">
+                <div class="cue-grid-header">
+                    <div>#</div>
+                    <div>Cue name</div>
+                    <div>Trigger</div>
+                    <div>Duration</div>
+                    <div>Delay</div>
+                    <div>Actions</div>
+                    <div>Timeline (Waterfall)</div>
+                </div>
+                <div id="cues-container">
+                    <!-- Les lignes Grid seront injectées ici -->
+                </div>
             </div>
         </section>
     </main>
-
     <script src="app.js"></script>
 </body>
 </html>

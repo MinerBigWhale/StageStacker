@@ -1,7 +1,8 @@
 const { spawn } = require('child_process');
-const path = require('path');
+const kill = require('tree-kill');
 const BasePlugin = require('../BasePlugin');
 const ffmpeg = require('fluent-ffmpeg');
+const { read } = require('fs');
 
 class VideoPlugin extends BasePlugin {
   constructor(config = {}) {
@@ -43,22 +44,22 @@ class VideoPlugin extends BasePlugin {
     }
 
     try {
-      this.metadata = await new Promise((resolve) => {
+      const data = await new Promise((resolve, reject) => {
         ffmpeg.ffprobe(this.resolveMediaAsset(this._file), (err, metadata) => {
-          if (err) return resolve(`Error retrieving metadata: ${err.message}`);
+          if (err) return reject(err);
+          resolve(metadata);
+        });
+      });
 
-          const format = metadata.format || {};
-          const audio = metadata.streams.find(s => s.codec_type === 'audio') || {};
-          const video = metadata.streams.find(s => s.codec_type === 'video') || {};
+      const format = data.format || {};
+      const audio = data.streams.find(s => s.codec_type === 'audio') || {};
+      const video = data.streams.find(s => s.codec_type === 'video') || {};
+      this.duration = parseFloat(format.duration) || 0;
+      const durationText = `${Math.floor(this.duration / 60)}:${Math.floor(this.duration % 60).toString().padStart(2, '0')}`;
 
-          const duration = format.duration 
-            ? `${Math.floor(format.duration / 60)}:${Math.floor(format.duration % 60).toString().padStart(2, '0')}` 
-            : 'unknown';
-
-          // Utilisation de \t pour les tabulations réelles
-          resolve(`author: ${format.tags?.artist || 'unknown'}
+      this.metadata =`author: ${format.tags?.artist || 'unknown'}
 title: ${format.tags?.title || 'unknown'}
-duration: ${duration}
+duration: ${durationText}
 Creation Time: ${format.tags?.creation_time || 'unknown'}
 Video :
 \tCodec: ${video.codec_long_name || 'unknown'}
@@ -67,19 +68,27 @@ Video :
 \tFrame Rate: ${video.r_frame_rate ? eval(video.r_frame_rate).toFixed(2) : 'unknown'}
 Audio :
 \tCodec: ${audio.codec_long_name || 'unknown'}
+\tSample Rate: ${audio.sample_rate ? audio.sample_rate + ' Hz' : 'unknown'}
 \tChannels: ${audio.channels ? `${audio.channel_layout} (${audio.channels})` : 'unknown'}
-\tBit Rate: ${audio.bit_rate || 'unknown'}`);
-        });
-      });
+\tBit Rate: ${audio.bit_rate || 'unknown'}`;
+
     } catch (e) {
       this.metadata = `Fatal Error: ${e.message}`;
     }
   }
 
+  
   _spawnMpv(file, extraArgs = []) {
+
+    const fullscreen = this.engine.isFullscreen; 
+    const screenNum = this.engine.fullscreenNum;
+
+    fullscreen && extraArgs.push('--fs-screen=' + (screenNum ? screenNum - 1 : 'all'));
+    fullscreen && extraArgs.push('--fullscreen');
+
     const args = [
       file,
-      '--quiet',
+      '--quiet', 
       '--force-window=yes',
       '--msg-level=cplayer=v', // Augmente la précision pour voir les stats
       '--term-status-msg=Audio-Out: ${audio-out-peak}', // Affiche les pics dans le flux
@@ -156,8 +165,11 @@ Audio :
   }
 
   async stop() { // Correction de asyncstop
+    console.log(`[VideoPlugin] Stopping all instances of cue ${this.id}`);
     this.instances.forEach((mpvProcess) => {
-      mpvProcess.kill('SIGTERM');
+      kill(mpvProcess.pid, 'SIGTERM', (err) => {
+        if (err) console.error(`Error stopping process ${mpvProcess.pid}:`, err);
+      });
     });
   }
 
@@ -204,7 +216,7 @@ Audio :
         {
           label: 'Media Info',
           fields: [
-            { key: 'metadata', label: 'Metadata', type: 'info' }
+            { key: 'metadata', label: 'Metadata', type: 'multiline', rows: 14, readonly: true }
           ],
         }
       ]

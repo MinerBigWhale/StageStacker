@@ -1,4 +1,5 @@
 const { spawn } = require('child_process');
+const kill = require('tree-kill');
 const path = require('path');
 const BasePlugin = require('../BasePlugin');
 const ffmpeg = require('fluent-ffmpeg');
@@ -43,30 +44,28 @@ class AudioPlugin extends BasePlugin {
     }
 
     try {
-      this.metadata = await new Promise((resolve) => {
-        ffmpeg.ffprobe(this.resolveMediaAsset(this._file), (err, data) => {
-          if (err) {
-            return resolve(`Error retrieving metadata: ${err.message}`);
-          }
-          
-          const format = data.format || {};
-          const audio = data.streams.find(s => s.codec_type === 'audio') || {};
-          
-          const duration = format.duration 
-            ? `${Math.floor(format.duration / 60)}:${Math.floor(format.duration % 60).toString().padStart(2, '0')}` 
-            : 'unknown';
-
-          resolve(`Artist: ${format.tags?.artist || 'unknown'}
-Title: ${format.tags?.title || 'unknown'}
-Album: ${format.tags?.album || 'unknown'}
-Duration: ${duration}
-Format: ${format.format_long_name || 'unknown'}
-Codec: ${audio.codec_long_name || 'unknown'}
-Sample Rate: ${audio.sample_rate ? audio.sample_rate + ' Hz' : 'unknown'}
-Channels: ${audio.channels ? audio.channel_layout + ' (' + audio.channels + ')' : 'unknown'}
-Bit Rate: ${format.bit_rate ? (format.bit_rate / 1000).toFixed(0) + ' kbps' : 'unknown'}`);
+      const data = await new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(this.resolveMediaAsset(this._file), (err, metadata) => {
+          if (err) return reject(err);
+          resolve(metadata);
         });
       });
+      
+      const format = data.format || {};
+      const audio = data.streams.find(s => s.codec_type === 'audio') || {};
+      this.duration = parseFloat(format.duration) || 0;
+      const durationText = `${Math.floor(this.duration / 60)}:${Math.floor(this.duration % 60).toString().padStart(2, '0')}`;
+
+      this.metadata = `Artist: ${format.tags?.artist || 'unknown'}
+Title: ${format.tags?.title || 'unknown'}
+Album: ${format.tags?.album || 'unknown'}
+Duration: ${durationText}
+Audio:
+\tCodec: ${audio.codec_long_name || 'unknown'}
+\tSample Rate: ${audio.sample_rate ? audio.sample_rate + ' Hz' : 'unknown'}
+\tChannels: ${audio.channels ? audio.channel_layout + ' (' + audio.channels + ')' : 'unknown'}
+\tBit Rate: ${format.bit_rate ? (format.bit_rate / 1000).toFixed(0) + ' kbps' : 'unknown'}`;
+
     } catch (e) {
       this.metadata = 'Error: ' + e.message;
     }
@@ -149,7 +148,12 @@ Bit Rate: ${format.bit_rate ? (format.bit_rate / 1000).toFixed(0) + ' kbps' : 'u
   }
 
   async stop() {
-    this.instances.forEach((proc) => proc.kill('SIGTERM'));
+    console.log(`[AudioPlugin] Stopping all instances of cue ${this.id}`);
+    this.instances.forEach((mpvProcess) => {
+      kill(mpvProcess.pid, 'SIGTERM', (err) => {
+        if (err) console.error(`Error stopping process ${mpvProcess.pid}:`, err);
+      });
+    });
   }
 
   serialize() {
@@ -193,12 +197,14 @@ Bit Rate: ${format.bit_rate ? (format.bit_rate / 1000).toFixed(0) + ' kbps' : 'u
           ],
         },
         {
-          label: 'Audio Info',
+          label: 'Media Info',
           fields: [
             {
               key: 'metadata',
               label: 'Metadata',
-              type: 'info',
+              type: 'multiline',
+              rows: 9,
+              readonly: true,
             }
           ],
         }

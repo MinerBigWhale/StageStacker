@@ -1,4 +1,5 @@
 const { randomUUID } = require('crypto');
+const { read } = require('fs');
 const path = require('path');
 
 class BasePlugin {
@@ -13,7 +14,7 @@ class BasePlugin {
     this.feeds = config.feeds || { audio: true, video: true };
     this.stopAudio = Boolean(config.stopAudio);
     this.stopVideo = Boolean(config.stopVideo);
-    
+    this.duration = Number.parseInt(config.duration, 10) || 0;
     this.engine = null;
     this.mediaRoot = null;
     this.showRoot = null;
@@ -107,6 +108,7 @@ class BasePlugin {
       loop: this.loop,
       stopVideo: this.stopVideo,
       stopAudio: this.stopAudio,
+      duration: this.duration,
       feeds: this.feeds,
     };
   }
@@ -158,12 +160,18 @@ class BasePlugin {
                 { value: 'after_previous', label: 'After Previous' },
               ],
             },
+            { 
+              key: 'duration',
+              label: 'Duration (ms)',
+              type: 'number',
+              min: 0,
+              readonly: true,
+            },
             {
               key: 'delay',
               label: 'Delay (ms)',
               type: 'number',
               min: 0,
-              step: 100,
             },
           ]
         }
@@ -189,6 +197,7 @@ class BasePlugin {
   async stopVideoOnly() {
     throw new Error('stopVideoOnly must be implemented by plugin subclasses.');
   }
+
 }
 
 module.exports = BasePlugin;
