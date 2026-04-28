@@ -1,5 +1,4 @@
 const { randomUUID } = require('crypto');
-const { read } = require('fs');
 const path = require('path');
 
 class BasePlugin {
@@ -12,13 +11,17 @@ class BasePlugin {
     this.delay = Number.parseInt(config.delay, 10) || 0;
     this.loop = Boolean(config.loop);
     this.feeds = config.feeds || { audio: true, video: true };
-    this.stopAudio = Boolean(config.stopAudio);
-    this.stopVideo = Boolean(config.stopVideo);
-    this.duration = Number.parseInt(config.duration, 10) || 0;
+    this.duration = config.duration;
+    this.stopAudio = config.stopAudio;
+    this.stopVideo = config.stopVideo;
     this.engine = null;
     this.mediaRoot = null;
     this.showRoot = null;
-    this._started = false;
+    this.triggeredAt = null;
+    this.startedAt = null;
+    this.pausedAt = null;
+    this.timeoutid = null;
+    this.stopAt = null;
   }
 
   setEngine(engine) {
@@ -33,10 +36,10 @@ class BasePlugin {
     this.mediaRoot = mediaRoot;
     this.showRoot = showRoot;
   }
-  
+
   resolveMediaAsset(filename) {
     if (!filename) return '';
-    
+
     // Si le chemin est déjà absolu, on le garde tel quel
     if (path.isAbsolute(filename)) {
       return filename;
@@ -53,50 +56,120 @@ class BasePlugin {
 
   // Méthode interne partagée
   async _executeStart() {
-    if (this._started && !this.loop) return;
-    this._started = true;
+    if (this.stopAudio) { this.engine.stopAllAudio(); }
+    if (this.stopVideo) { this.engine.stopAllVideo(); }
     this.engine.notifyCueStarted(this);
-    try {
-      return await this.start();
-    } catch (err) {
-      this._started = false;
-      throw err;
+    this.startedAt = Date.now();
+    this.timeoutid = null;
+    this.pausedAt = null;
+    this.stopAt = null;
+    this.triggeredAt = null;
+    return await this.start();
+  }
+
+  onComplete() {
+    if (this.engine && !this.stopAt) {
+      console.log(`[${this.name}] Execution terminated`);
+      this.engine.notifyCueComplete(this);
     }
   }
 
-  // Appelé par l'Engine (Propagation automatique)
-  async trigger() {
-    // Si c'est manuel, on ignore la propagation automatique
-    if (this.triggerType === 'manually') return;
-
+  async previousStarted() {
     if (this.triggerType === 'with_previous') {
       console.log(`[${this.name}] Action scheduled: starting with previous cue (delay: ${this.delay}ms)`);
-      setTimeout(() => this._executeStart(), this.delay);
-    } 
-    else if (this.triggerType === 'after_previous') {
-      console.log(`[${this.name}] Action scheduled: waiting for previous cue to complete...`);
-      
-      this.engine.once('cueComplete', (previousCue) => {
-        console.log(`[${this.name}] Previous cue (${previousCue.name}) completed. Starting in ${this.delay}ms`);
-        setTimeout(() => this._executeStart(), this.delay);
-      });
+      this.timeoutid = setTimeout(() => this._executeStart(), this.delay);
+      this.triggeredAt = Date.now();
+    }
+  }
+
+  async previousCompleted() {
+    if (this.triggerType === 'after_previous') {
+      console.log(`[${this.name}] Action scheduled: starting after previous cue (delay: ${this.delay}ms)`);
+      this.timeoutid = setTimeout(() => this._executeStart(), this.delay);
+      this.triggeredAt = Date.now();
     }
   }
 
   // Appelé par l'API (Forçage manuel)
   async forceStart() {
     console.log(`[${this.name}] Forced start : starting immediately.`);
+    if (this.timeoutid) { clearTimeout(this.timeoutid); this.timeoutid = null; this.triggeredAt = null; this.pausedAt = null; }
     return await this._executeStart();
   }
 
 
-  onComplete() {
-    this._started = false; // Reset pour permettre un nouveau trigger
-    if (this.engine) {
-      console.log(`[${this.name}] Execution terminated`);
-      this.engine.notifyCueComplete(this);
-    }
+  async start() {
+    throw new Error('start() must be implemented by plugin subclasses.');
   }
+
+  async stop() {
+    throw new Error('stop() must be implemented by plugin subclasses.');
+  }
+
+  async pause() {
+    throw new Error('pause() must be implemented by plugin subclasses.');
+  }
+
+  async resume() {
+    throw new Error('resume() must be implemented by plugin subclasses.');
+  }
+
+  async stopAudioOnly() {
+    //optional handler
+    this.stop();
+  }
+
+  async stopVideoOnly() {
+    //optional handler
+    this.stop();
+  }
+
+  async setFullscreen() {
+    //optional handler
+    return;
+  }
+
+
+  async triggerStop() {
+    if (this.startedAt) {
+      this.stop();
+      this.stopAt = Date.now();
+      this.startedAt = null;
+    } else {
+      clearTimeout(this.timeoutid);
+      this.timeoutid = null;
+      this.triggeredAt = null;
+      this.pausedAt = null;
+    }
+    console.log(`[${this.name}] Stop Signal executed`);
+  }
+
+
+  async triggerPause() {
+    if (this.startedAt) {
+      this.pause();
+    } else {
+      clearTimeout(this.timeoutid);
+      this.timeoutid = null;
+      this.pausedAt = Date.now();
+    }
+    console.log(`[${this.name}] Pause Signal executed`);
+  }
+
+
+  async triggerResume() {
+    if (this.pausedAt) {
+      let newDelay = ((this.delay / 1000) - (this.pausedAt - this.triggeredAt)) * 1000;
+      console.log(`[${this.name}] delay was ${this.delay}ms, newDelay is ${newDelay}ms`)
+      this.triggeredAt = Date.now() + (newDelay - this.delay) / 1000;
+      this.timeoutid = setTimeout(() => this._executeStart(), newDelay);
+      this.pausedAt = null;
+    } else {
+      this.resume();
+    }
+    console.log(`[${this.name}] Resume Signal executed`);
+  }
+
 
   serialize() {
     return {
@@ -112,7 +185,7 @@ class BasePlugin {
       feeds: this.feeds,
     };
   }
-  
+
   setConfigFields(key, value) {
     this[key] = value;
   }
@@ -121,12 +194,12 @@ class BasePlugin {
     return this[key];
   }
 
-  getUicolor() {    
-    return '#636363';  ;
+  getUicolor() {
+    return '#636363';;
   }
-  
-  getUiIcon() {    
-    return ''  ;
+
+  getUiIcon() {
+    return '';
   }
 
   getUIConfig() {
@@ -136,19 +209,19 @@ class BasePlugin {
           label: 'General',
           fields: [
             {
-              key : 'name',
+              key: 'name',
               label: 'Name',
-              type: 'text', 
+              type: 'text',
             },
-            { 
-              key: 'stopVideo', 
-              label: 'Stop Video', 
-              type: 'toggle' 
+            {
+              key: 'stopVideo',
+              label: 'Stop Video',
+              type: 'toggle'
             },
-            { 
-              key: 'stopAudio', 
-              label: 'Stop Audio', 
-              type: 'toggle' 
+            {
+              key: 'stopAudio',
+              label: 'Stop Audio',
+              type: 'toggle'
             },
             {
               key: 'triggerType',
@@ -160,7 +233,7 @@ class BasePlugin {
                 { value: 'after_previous', label: 'After Previous' },
               ],
             },
-            { 
+            {
               key: 'duration',
               label: 'Duration (ms)',
               type: 'number',
@@ -177,25 +250,6 @@ class BasePlugin {
         }
       ]
     };
-  }
-  
-  
-
-
-  async start() {
-    throw new Error('start() must be implemented by plugin subclasses.');
-  }
-
-  async stop() {
-    throw new Error('stop() must be implemented by plugin subclasses.');
-  }
-
-  async stopAudioOnly() {
-    throw new Error('stopAudioOnly must be implemented by plugin subclasses.');
-  }
-
-  async stopVideoOnly() {
-    throw new Error('stopVideoOnly must be implemented by plugin subclasses.');
   }
 
 }

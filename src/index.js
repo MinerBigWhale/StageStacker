@@ -31,21 +31,14 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 const engine = new PlaybackEngine(wss);
 
-wss.on('connection', (ws) => {
-  console.log('Client connected');
-  if (loadedStack) {
-    ws.send(JSON.stringify({
-      type: 'stack:loaded',
-      data: {
-        showConfig: loadedStack.showConfig,
-        cuesCount: loadedStack.cues.length,
-      },
-    }));
-  }
+wss.on('connection', (ws, req) => {
+  console.log(`[WebSocket] OnConnection from=${req.client.remoteAddress}`);
+  ws.send(JSON.stringify({type: 'websocket:connected'}));
 });
 
 // Helper for broadcasting
-function broadcast(message) {
+WebSocket.Server.prototype.broadcast = function(message) {
+  console.log(`[WebSocket] broadcast msg=${message.type}`);
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(JSON.stringify(message));
@@ -55,10 +48,6 @@ function broadcast(message) {
 
 /** 
  * STACK MANAGEMENT ROUTES
- */
-
-/**
- * POST /api/stack/new
  */
 app.post('/api/stack/new', async (req, res) => {
   try { 
@@ -78,7 +67,7 @@ app.post('/api/stack/new', async (req, res) => {
       cues: loadedStack.cues.map((cue, index) => ({...cue.serialize(), order: index})),
     };
 
-    broadcast({ type: 'stack:loaded', data: response });
+    wss.broadcast({ type: 'stack:loaded', data: response });
     res.json(response);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -106,7 +95,6 @@ app.get('/api/stack/load/:stack', async (req, res) => {
     }
     fs.mkdirSync(extractDir, { recursive: true });
 
-    // Load and register cues with engine
     loadedStack = await StackManager.loadShowFromStack(stackPath, extractDir);
     engine.setContext(loadedStack); 
     loadedStack.cues.forEach(cue => engine.registerCue(cue));
@@ -118,7 +106,7 @@ app.get('/api/stack/load/:stack', async (req, res) => {
       cues: loadedStack.cues.map((cue, index) => ({...cue.serialize(), order: index})),
     };
 
-    broadcast({ type: 'stack:loaded', data: response });
+    wss.broadcast({ type: 'stack:loaded', data: response });
     res.json(response);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -163,45 +151,8 @@ app.post('/api/stack/save/', async (req, res) => {
 });
 
 /** 
- * CUE CONTROL ROUTES
- */
-
-app.post('/api/engine/:cueId/trigger', async (req, res) => {
-  const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
-  if (!cue) return res.status(404).send('Cue not found');
-
-  // On ignore le delay et le triggerType ici
-  cue.forceStart().catch(err => console.error(err));
-  
-  res.json({ success: true, message: `Forçage de ${cue.name}` });
-});
-
-app.post('/api/engine/:cueId/stop', async (req, res) => {
-  const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
-  if (cue && cue.stop) {
-    await cue.stop();
-    res.json({ success: true });
-  } else {
-    res.status(404).send('Cannot stop cue');
-  }
-});
-
-app.get('/api/engine/activecues', (req, res) => {
-  res.json({ 
-    success: true, 
-    cues: Array.from(engine.activeCues.values()).map(c => c.serialize()) 
-  });
-});
-
-app.post('/api/engine/stop', async (req, res) => {
-  await engine.stopAll();
-  res.json({ success: true, message: 'All cues stopped' });
-});
-
-/** 
  * CONFIGURATION ROUTES
  */
-
 app.get('/api/stack/cues/:cueId/uiconfig', (req, res) => {
   const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
   if (!cue) return res.status(404).send('Cue not found');
@@ -211,7 +162,6 @@ app.get('/api/stack/cues/:cueId/uiconfig', (req, res) => {
 app.post('/api/stack/upload', (req, res, next) => {
   if (!extractDir) return res.status(400).json({ error: 'No stack loaded' });
   
-  // On génère le middleware à la volée pour le dossier actuel
   const upload = StackManager.getUploadMiddleware(extractDir).single('file');
   
   upload(req, res, (err) => {
@@ -254,21 +204,78 @@ app.post('/api/stack/cues/move', (req, res) => {
   res.json({ success: true });
 });
 
-/**
- * GET /health
- * Health check endpoint
+/** 
+ * ENGINE CONTROL ROUTES
  */
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    stackLoaded: !!loadedStack,
-    timestamp: new Date().toISOString(),
+app.post('/api/engine/:cueId/trigger', async (req, res) => {
+  const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
+  if (!cue) return res.status(404).send('Cue not found');
+
+  cue.forceStart().catch(err => console.error(err));
+  
+  res.json({ success: true, message: `Forçage de ${cue.name}` });
+});
+
+app.post('/api/engine/:cueId/stop', async (req, res) => {
+  const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
+  if (cue && cue.stop) {
+    await cue.stop();
+    res.json({ success: true });
+  } else {
+    res.status(404).send('Cannot stop cue');
+  }
+});
+
+app.post('/api/engine/:cueId/resume', async (req, res) => {
+  const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
+  if (cue && cue.resume) {
+    await cue.resume();
+    res.json({ success: true });
+  } else {
+    res.status(404).send('Cannot resume cue');
+  }
+});
+
+app.post('/api/engine/:cueId/pause', async (req, res) => {
+  const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
+  if (cue && cue.pause) {
+    await cue.pause();
+    res.json({ success: true });
+  } else {
+    res.status(404).send('Cannot pause cue');
+  }
+});
+
+app.get('/api/engine/activecues', (req, res) => {
+  res.json({ 
+    success: true, 
+    cues: Array.from(engine.activeCues.values()).map(c => c.serialize()) 
   });
+});
+
+app.post('/api/engine/stop', async (req, res) => {
+  await engine.stopAll();
+  res.json({ success: true, message: 'All cues stopped' });
+});
+
+app.post('/api/engine/next', async (req, res) => {
+  await engine.forceNext();
+  res.json({ success: true, message: 'Next cue triggered' });
+});
+
+app.post('/api/engine/pause', async (req, res) => {
+  await engine.pauseAll();
+  res.json({ success: true, message: 'All cues paused' });
+});
+
+
+app.post('/api/engine/resume', async (req, res) => {
+  await engine.resumeAll();
+  res.json({ success: true, message: 'All cues resumed' });
 });
 
 /**
  * GET /api/display/fullscreen/:active/:num
- * Toggle fullscreen playback and select the screen too (1 à 4) 0=all
  */
 app.get('/api/display/fullscreen/:active/:num', (req, res) => {
   if (req.params.active === 'false') {
@@ -276,7 +283,7 @@ app.get('/api/display/fullscreen/:active/:num', (req, res) => {
     return res.json({ success: true, fullscreen: false, screen: engine.fullscreenNum, message: '[Engine] Fullscreen display deactivated' });
   } 
   const num = parseInt(req.params.num);
-  if (isNaN(num) || num < 0 || num > 4) {
+  if (isNaN(num) || num < 1 || num > 4) {
     return res.status(400).json({ error: 'Invalid display number', fullscreen: engine.isFullscreen, screen: engine.fullscreenNum });
   }
   engine.toggleFullscreen(true, num);
@@ -312,9 +319,9 @@ app.get('/api', (req, res) => {
   res.json({
     name: 'Stage Stacker Backend',
     version: '0.1.0',
-    description: 'Collaborative backend for Stage Stacker control',
+    description: 'Player and backend for Stage Stacker control center',
     // On trie les routes par ordre alphabétique pour la lisibilité
-    endpoints: routes.sort(),
+    api: routes.sort(),
     websocket: {
       url: `ws://${req.hostname}:${PORT}`,
       events: ['stack:loaded', 'cue:started', 'cue:complete', 'cue:error'],
@@ -340,7 +347,7 @@ app.use((err, req, res, next) => {
 
 // Start the server
 server.listen(PORT, () => {
-  console.log(`Stage Stacker Backend running on http://localhost:${PORT}`);
+  console.log(`Stage Stacker running on http://localhost:${PORT}`);
   console.log(`WebSocket available at ws://localhost:${PORT}`);
   console.log(`API Documentation at http://localhost:${PORT}/api`);
 });

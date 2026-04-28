@@ -3,19 +3,74 @@
 const statusEl = document.getElementById('status');
 const stackListEl = document.getElementById('stack-list');
 const cuesContainer = document.getElementById('cues-container');
+const audioMonitor = document.getElementById('audio-monitor');
 
 let _isFullscreen = false;
 let _screenNum = 0;
 
-function onWebSocketMessage(message) {
-    const data = JSON.parse(message.data);
+const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const wsUrl = `${protocol}//${window.location.hostname}:${window.location.port}`;
+
+const socket = new WebSocket(wsUrl);
+
+socket.onopen = () => {
+    console.log("Connecté au serveur WebSocket");
+    statusEl.innerText = "Connecté";
+};
+
+socket.onclose = () => {
+    console.warn("WebSocket déconnecté. Tentative de reconnexion...");
+    statusEl.innerText = "Déconnecté";
+    // Optionnel : relancer la connexion après 3 secondes
+    setTimeout(() => window.location.reload(), 3000);
+};
+
+socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    console.dir(data);
     if (data.type === 'engine:fullscreen') {
-        _isFullscreen = data.value;
+        _isFullscreen = data.active;
+        _screenNum = data.screenNum;
         const btn = document.getElementById('btn-fullscreen-toggle');
         btn.innerText = _isFullscreen ? 'ON AIR' : 'OFF AIR';
         btn.className = _isFullscreen ? 'btn-on' : 'btn-off';
+        const slct = document.getElementById('screen-selector').value = _screenNum;
     }
+    /*if (data.event === 'audio_peak') {
+        const activeIds = payload.map(p => p.cue);
+
+        payload.forEach(item => {
+            let container = document.getElementById(`vu-cont-${item.cue}`);
+            
+            // Si le VU mètre n'existe pas, on le crée
+            if (!container) {
+                container = document.createElement('div');
+                container.id = `vu-cont-${item.cue}`;
+                container.className = 'vu-meter-container';
+                container.innerHTML = `
+                    <div class="vu-label">Cue ${item.cue}</div>
+                    <div class="vu-track"><div class="vu-fill"></div></div>
+                `;
+                audioMonitor.appendChild(container);
+            }
+
+            // Mise à jour de la barre
+            const fill = container.querySelector('.vu-fill');
+            const level = (item.peaks || 0) * 100;
+            fill.style.width = `${level}%`;
+            
+            // Couleur rouge si saturation (> 0.9)
+            fill.style.backgroundColor = item.peaks > 0.9 ? '#ff4d4d' : '#28a745';
+        });
+
+        // Nettoyage : retire les VU mètres des cues qui ont fini de jouer
+        Array.from(audioMonitor.children).forEach(child => {
+            const id = child.id.replace('vu-cont-', '');
+            if (!activeIds.includes(id)) child.remove();
+        });
+    }*/
 }
+
 async function addCue(type) {
     await fetch('/api/stack/cues/add', {
         method: 'POST',
@@ -58,7 +113,7 @@ async function handleFullscreenToggle() {
         
         // Mise à jour visuelle du bouton
         if (data.fullscreen) {
-            btn.innerText = `ON AIR (SCR ${data.screen})`;
+            btn.innerText = `ON AIR`;
             btn.className = 'btn-on';
             statusEl.innerText = data.message;
         } else {
@@ -424,7 +479,10 @@ async function updateValue(cueId, key, value) {
     if(['delay', 'triggerType', 'file'].includes(key)) loadConfig(cueId);
 }
 
-async function triggerCue(id) { fetch(`/api/engine/${id}/trigger`, { method: 'POST' }); }
-async function stopall() { fetch(`/api/engine/stop`, { method: 'POST' }); }
+async function triggerCue(id) { await fetch(`/api/engine/${id}/trigger`, { method: 'POST' }); }
+async function stopAllCue() { await fetch(`/api/engine/stop`, { method: 'POST' }); }
+async function triggerNextCue() { await fetch('/api/engine/next', { method: 'POST' }); }
+async function pauseAllCues() { await fetch('/api/engine/pause', { method: 'POST' }); }
+async function resumeAllCues() { await fetch('/api/engine/resume', { method: 'POST' }); }
 
 fetchStacks();

@@ -2,6 +2,7 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
+const { randomUUID } = require('crypto');
 
 
 class StackManager {
@@ -52,7 +53,7 @@ class StackManager {
 
   static async createNewStack(name = 'New Stage Stacker Show', extractDir) {
     const showConfig = {
-      id: `show-${require('crypto').randomUUID().split('-')[0]}`,
+      id: `show-${randomUUID().split('-').slice(0, 2).join('-')}`,
       name: name,
       version: '1.0.0',
       created: new Date().toISOString(),
@@ -83,7 +84,7 @@ class StackManager {
     };
 
     const showConfig = { 
-      id: loadedStack.showConfig.id,
+      id: loadedStack.showConfig.id || `show-${randomUUID().split('-').slice(0, 2).join('-')}`,
       name: loadedStack.showConfig.name,
       version: loadedStack.showConfig.version,
       created: loadedStack.showConfig.created,

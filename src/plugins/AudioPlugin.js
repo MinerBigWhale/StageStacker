@@ -3,27 +3,50 @@ const kill = require('tree-kill');
 const path = require('path');
 const BasePlugin = require('../BasePlugin');
 const ffmpeg = require('fluent-ffmpeg');
+const net = require('net');
+
+const { randomUUID } = require('crypto');
 
 class AudioPlugin extends BasePlugin {
 
   constructor(config = {}) {
     super(config);
-    this._file = config.file || '';
-    this.instances = new Map();
-    this.wsServer = null;
-    this.peakInterval = null;
-    this._completeResolver = null;
-    this._completionPromise = new Promise((resolve) => {
-      this._completeResolver = resolve;
-    });
+    this._file = config.file;
+    this.mpvProcess = null;
+    this.peakValue = null;
+    this.ipcPath = null
     this.metadata = '';
   }
-  
+
+
+  sendIpcCommand(commandArray) {
+    const client = net.connect(this.ipcPath, () => {
+      const jsonRequest = JSON.stringify({
+        command: commandArray
+      });
+      client.write(jsonRequest + '\n');
+    });
+
+    client.on('data', (data) => {
+      const messages = data.toString().split('\n').filter(msg => msg.trim());
+
+      messages.forEach(msg => {
+        const response = JSON.parse(msg);
+        console.log(`[AudioPlugin] ${this.id}-ipc:`, response);
+      });
+      client.destroy();
+    });
+
+    client.on('error', (err) => {
+      console.error("IPC Connection Error:", err.message);
+    });
+  }
+
   setStackContext({ mediaRoot, showRoot }) {
     super.setStackContext({ mediaRoot, showRoot });
     if (this._file) this.getMetadata();
   }
-  
+
   attachWebSocketServer(wsServer) {
     this.wsServer = wsServer;
   }
@@ -31,11 +54,88 @@ class AudioPlugin extends BasePlugin {
   get file() {
     return this._file;
   }
-  
+
   set file(file) {
     this._file = file;
     this.getMetadata();
   }
+
+  async start() {
+    if (!this._file) return;
+    if (this.mpvProcess) return;
+
+    const resolvedFile = this.resolveMediaAsset(this._file);
+    const extraArgs = [];
+    if (this.loop) extraArgs.push('--loop=inf');
+
+    const randid= randomUUID().split('-')[3];
+
+    this.ipcPath = process.platform === 'win32' 
+        ? `\\\\.\\pipe\\mpv-${this.id}-${randid}` 
+        : `/tmp/mpv-${this.id}-${randid}.sock`;
+        
+    console.log(`[AudioPlugin] cue:${this.id} set ipcPath:${this.ipcPath}`)
+
+    this.mpvProcess = spawn('mpv', [
+      resolvedFile,
+      '--quiet','--no-video',
+      `--input-ipc-server=${this.ipcPath}`,
+      ...extraArgs
+    ]);
+
+    this.mpvProcess.stderr.on('data', (data) => {
+      console.error(`[MPV ${this.id}]: ${data.toString()}`);
+    });
+
+    this.mpvProcess.stdout.on('data', (data) => {
+      //console.info(`[MPV ${this.id}]: ${data.toString()}`);
+    });
+
+    this.mpvProcess.on('close', (code) => {
+      console.warn(`[AudioPlugin] MPV closed (Exit Code: ${code})`);
+      this.mpvProcess = null;
+      this.onComplete();
+    });
+  }
+
+  async stop() {
+    console.log(`[AudioPlugin] Stopping all instances of cue ${this.id}`);
+    kill(this.mpvProcess.pid, 'SIGTERM', (err) => {
+      if (err) console.error(`Error stopping process:`, err);
+    });
+  }
+
+  async pause() {
+    this.sendIpcCommand(["set_property", "pause", true]);
+  }
+
+  async resume() {
+    this.sendIpcCommand(["set_property", "pause", false]);
+  }
+  
+  async muteAudio() {
+    return this.sendIpcCommand(["set_property", "mute", true]);
+  }
+
+  async resumeAudio() {
+    return this.sendIpcCommand(["set_property", "mute", false]);
+  }
+
+  async stopAudioOnly() { this.stop(); }
+  async stopVideoOnly() { return; }
+
+  serialize() {
+    let output = super.serialize();
+    output.type = 'AudioPlugin';
+    output.feeds = { video: false, audio: true };
+    return {
+      ...output,
+      file: this._file,
+      loop: this.loop,
+    };
+  }
+
+
 
   async getMetadata() {
     if (!this._file) {
@@ -50,7 +150,7 @@ class AudioPlugin extends BasePlugin {
           resolve(metadata);
         });
       });
-      
+
       const format = data.format || {};
       const audio = data.streams.find(s => s.codec_type === 'audio') || {};
       this.duration = parseFloat(format.duration) || 0;
@@ -70,109 +170,12 @@ Audio:
       this.metadata = 'Error: ' + e.message;
     }
   }
-  _spawnMpv(file, extraArgs = []) {
-    const args = [
-      file,
-      '--quiet',
-      '--no-video',
-      '--msg-level=cplayer=v', // Augmente la précision pour voir les stats
-      '--term-status-msg=Audio-Out: ${audio-out-peak}', // Affiche les pics dans le flux
-      ...extraArgs
-    ];
-    return spawn('mpv', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+  getUicolor() {
+    return '#0041b3';;
   }
 
-  _registerProcess(instanceId, mpvProcess) {
-    this.instances.set(instanceId, mpvProcess);
-
-    const handleOutput = (chunk) => {
-      const output = chunk.toString('utf8');
-      
-      // On ne broadcast que si la ligne contient des infos de peak
-      // mpv affiche souvent les peaks sous cette forme avec l'argument term-status-msg
-      if (output.includes('Audio-Out')) {
-        this._broadcastPeakLevels({ 
-          sourceId: instanceId, 
-          sample: output.trim() 
-        });
-      }
-    };
-
-    mpvProcess.stdout.on('data', handleOutput);
-    // Souvent mpv écrit les status sur stderr
-    mpvProcess.stderr.on('data', handleOutput);
-
-    mpvProcess.on('close', () => {
-      this.instances.delete(instanceId);
-      if (this.instances.size === 0) {
-        if (this.peakInterval) clearInterval(this.peakInterval);
-        this.peakInterval = null;
-        
-        this._started = false; // Important pour pouvoir relancer
-        this.onComplete(); 
-        if (this._completeResolver) this._completeResolver();
-      }
-    });
-  }
-
-  _startPeakBroadcast() {
-    if (!this.wsServer || this.peakInterval) return;
-    this.peakInterval = setInterval(() => {
-      this._broadcastPeakLevels({ type: 'heartbeat' });
-    }, 250);
-  }
-
-  _broadcastPeakLevels(payload) {
-    if (!this.wsServer) return;
-    const message = JSON.stringify({ cueId: this.id, timestamp: Date.now(), payload });
-    this.wsServer.clients.forEach((client) => {
-      if (client.readyState === 1) client.send(message);
-    });
-  }
-
-  async start() {
-    if (!this._file) {
-      this.onComplete();
-      if (this._completeResolver) this._completeResolver();
-      return this._completionPromise;
-    }
-
-    const resolvedFile = this.resolveMediaAsset(this._file);
-    const args = this.loop ? ['--loop=inf'] : [];
-    
-    const mpvProcess = this._spawnMpv(resolvedFile, args);
-    this._registerProcess(this.id, mpvProcess);
-    this._startPeakBroadcast();
-    
-    return this._completionPromise;
-  }
-
-  async stop() {
-    console.log(`[AudioPlugin] Stopping all instances of cue ${this.id}`);
-    this.instances.forEach((mpvProcess) => {
-      kill(mpvProcess.pid, 'SIGTERM', (err) => {
-        if (err) console.error(`Error stopping process ${mpvProcess.pid}:`, err);
-      });
-    });
-  }
-
-  serialize() {
-    let output = super.serialize();
-    output.type = 'AudioPlugin';
-    output.feeds = { video: false, audio: true};
-    return {
-      ...output,
-      file: this._file,
-      loop: this.loop,
-    };
-  }
-
-  
-  getUicolor() {    
-    return '#00348d';  ;
-  }
-  
-  getUiIcon() {    
+  getUiIcon() {
     return '🔊';
   }
 

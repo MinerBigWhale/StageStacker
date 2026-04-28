@@ -1,73 +1,40 @@
 const EventEmitter = require('events');
-const kill = require('tree-kill');
-const { spawn } = require('child_process');
-const path = require('path');
+const Blackout = require('./Blackout');
+
 
 class PlaybackEngine extends EventEmitter {
   constructor(wss = null) {
     super();
     this.wss = wss;
     this.activeCues = new Map();
+    this.loadedCues = new Map();
     this.context = null; 
     this.isFullscreen = false;
     this.fullscreenNum = null;
-    this.blackoutProcess = null;
+    this.blackout = new Blackout(this);
+    this.LastCue = 0;
   }
 
   toggleFullscreen(Active=true, ScrennNum = 1) {
-    this.isFullscreen = Active;
-    if (this.isFullscreen) {
-        this.fullscreenNum = ScrennNum;
-        const args = [];
-        if (Active) args.push('--fullscreen');
-        if (ScrennNum) args.push('--fs-screen=' + (ScrennNum ? ScrennNum - 1 : 'all'));
-        this._showBlackout(args);
-    } else {
-        this._hideBlackout(); 
-    }    
-    // Notifier le front-end via WebSocket
-    this.broadcast({ type: 'engine:fullscreen', value: this.isFullscreen });
-  }
-
-  
-  _showBlackout(extraArgs = []) {
-   
-    console.log(`[Engine] Activating blackout on screen ${this.fullscreenNum || 'all'}`);
-    if (this.blackoutProcess) return;
-    this.blackoutProcess = spawn('mpv', [
-      '--force-window=yes',
-      '--background-color=#000000',
-      '--idle=yes',
-      '--keep-open=yes',
-      '--player-operation-mode=pseudo-gui',
-      '--no-osc',
-      '--no-osd-bar',
-      '--title=STAGE-BLACKOUT',
-      ...extraArgs
-    ]);
-
-
-    this.blackoutProcess.stderr.on('data', (data) => {
-        console.error(`[MPV Error]: ${data.toString()}`);
-    });
-
-    this.blackoutProcess.on('close', (code) => {
-        console.warn(`[WARNING] Blackout closed (Exit Code: ${code})`);
-        this.blackoutProcess = null;
-        this.isFullscreen = false;
-        this.broadcast({ type: 'engine:fullscreen', value: false });
-    });
-  }
-
-  _hideBlackout() {
-    if (this.blackoutProcess) {
-      kill(this.blackoutProcess.pid, 'SIGTERM', (err) => {
-        if (err) console.error(`Error stopping blackout process ${this.blackoutProcess.pid}:`, err);
+      this.isFullscreen = Active;
+      if (this.isFullscreen) {
+          this.fullscreenNum = ScrennNum;
+          this.blackout._showBlackout(['--fs-screen=' + this.fullscreenNum]);
+      } else {
+          this.blackout._hideBlackout(); 
+      }    
+      
+      this.activeCues.forEach(cue => {
+        cue.setFullscreen(this.isFullscreen);
       });
-      this.blackoutProcess = null;
-    }
+
+      this.wss.broadcast({ type: 'engine:fullscreen', active: this.isFullscreen, screenNum: this.fullscreenNum });
   }
-  
+
+  // L'index.js passera l'objet global qui contient la liste .cues
+  setContext(context) {
+    this.context = context;
+  }
 
   /**
    * Enregistre une Cue et lui donne accès à l'engine
@@ -85,54 +52,103 @@ class PlaybackEngine extends EventEmitter {
   async triggerCue(cue) {
     try {
       console.log(`[Engine] Triggering: ${cue.name} (${cue.id})`);
-      return await cue.trigger(); 
+      this.loadedCues.set(cue.id, cue);
+      return await cue.forceStart(); 
     } catch (err) {
-      console.error(`[Engine] Error triggering cue ${cue.id}:`, err);
-      this.broadcast({ type: 'cue:error', id: cue.id, error: err.message });
+      console.error(`[Engine] Error triggering cue:`, err);
     }
   }
 
-    // L'index.js passera l'objet global qui contient la liste .cues
-  setContext(context) {
-    this.context = context;
-  }
 
   notifyCueStarted(cue) {
+    this.wss.broadcast({ type: 'cue:started', data: { id: cue.id } });
+    console.log(`[Engine] Cue ${cue.id} Started`);
+    this.loadedCues.delete(cue.id);
     this.activeCues.set(cue.id, cue);
-    this.broadcast({ type: 'cue:started', data: { id: cue.id } });
-
-    // Propagation automatique vers la suite de la liste du StackManager
-    if (this.context && this.context.cues) {
-      const index = this.context.cues.findIndex(c => c.id === cue.id);
-      const nextCue = this.context.cues[index + 1];
-
-      if (nextCue) {
-        // On déclenche la logique automatique de la cue suivante
-        nextCue.trigger().catch(e => console.error(e));
-      }
+    this.LastCue = cue;
+    const index = this.context.cues.findIndex(c => c.id === cue.id);
+    const nextCue = this.context.cues[index + 1];
+    if (nextCue) {
+      nextCue.previousStarted().catch(e => console.error(e));
+      this.loadedCues.set(nextCue.id, nextCue);
     }
   }
 
   notifyCueComplete(cue) {
+    this.wss.broadcast({ type: 'cue:complete', data: { id: cue.id } });
+    console.log(`[Engine] Cue ${cue.id} Completed`);
     this.activeCues.delete(cue.id);
-    this.broadcast({ type: 'cue:complete', data: { id: cue.id } });
-    
-    // On émet pour les plugins en "after_previous"
-    this.emit('cueComplete', cue);
+
+    const index = this.context.cues.findIndex(c => c.id === cue.id);
+    const nextCue = this.context.cues[index + 1];
+    if (nextCue) {
+      nextCue.previousCompleted().catch(e => console.error(e));
+      this.loadedCues.set(nextCue.id, nextCue);
+    }
   }
 
-  /**
-   * Arrête tout ce qui joue
-   */
   async stopAll() {
     const stopPromises = [];
+    this.loadedCues.forEach(cue => {
+      stopPromises.push(cue.triggerStop());
+    });
+    await Promise.all(stopPromises);
+    this.loadedCues.clear();
     this.activeCues.forEach(cue => {
-      if (cue.stop) stopPromises.push(cue.stop());
+      stopPromises.push(cue.triggerStop());
     });
     await Promise.all(stopPromises);
     this.activeCues.clear();
     console.log('[Engine] All cues stopped');
-    this.broadcast({ type: 'engine:all_stopped' });
+    this.wss.broadcast({ type: 'engine:all_stopped' });
+  }
+  
+  async stopAllAudio() {
+    const stopPromises = [];
+    this.activeCues.forEach(cue => {
+      stopPromises.push(cue.stopAudioOnly());
+    });
+    await Promise.all(stopPromises);
+    console.log('[Engine] Audio cues stopped');
+  }
+  
+  async stopAllVideo() {
+    const stopPromises = [];
+    this.activeCues.forEach(cue => {
+      stopPromises.push(cue.stopVideoOnly());
+    });
+    await Promise.all(stopPromises);
+    console.log('[Engine] Video cues stopped');
+  }
+
+  async pauseAll() {
+    const pausePromises = [];
+    this.loadedCues.forEach(cue => {
+      pausePromises.push(cue.triggerPause());
+    });
+    this.activeCues.forEach(cue => {
+      pausePromises.push(cue.triggerPause());
+    });
+    await Promise.all(pausePromises);
+    console.log('[Engine] All cues paused');
+    this.wss.broadcast({ type: 'engine:all_paused' });
+  }
+
+  async resumeAll() {
+    const resumePromises = [];
+    this.activeCues.forEach(cue => {
+      resumePromises.push(cue.triggerResume());
+    });
+    await Promise.all(resumePromises);
+    console.log('[Engine] All cues resumed');
+    this.wss.broadcast({ type: 'engine:all_resumed' });
+  }
+
+  async forceNext(){
+    await this.stopAll();
+    const index = this.context.cues.findIndex(c => c.id === this.LastCue.id);
+    const nextCue = this.context.cues[index + 1];
+    this.triggerCue(nextCue);
   }
 
   broadcast(message) {
@@ -141,6 +157,21 @@ class PlaybackEngine extends EventEmitter {
     this.wss.clients.forEach(client => {
       if (client.readyState === 1) client.send(payload);
     });
+  }
+
+  startPeakBroadcast() {
+    if (wss) return;
+    this.peakInterval = setInterval(() => {
+      this.wss.broadcastPeakLevels({ type: 'heartbeat' });
+    }, 250);
+  }
+
+  broadcastPeakLevels(payload) {
+    this.activeCues.forEach(cue => {
+      payload.push({ cue: cue.id, peaks: cue.peakValue, volume: cue.volume });
+    });
+    const message = JSON.stringify({ event: audio_peak, timestamp: Date.now(), payload : payload });
+    this.wss.broadcast(message);
   }
 }
 
