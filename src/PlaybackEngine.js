@@ -61,7 +61,7 @@ class PlaybackEngine extends EventEmitter {
 
 
   notifyCueStarted(cue) {
-    this.wss.broadcast({ type: 'cue:started', data: { id: cue.id } });
+    this.wss.broadcast({ type: 'cue:started', id: cue.id });
     console.log(`[Engine] Cue ${cue.id} Started`);
     this.loadedCues.delete(cue.id);
     this.activeCues.set(cue.id, cue);
@@ -75,7 +75,7 @@ class PlaybackEngine extends EventEmitter {
   }
 
   notifyCueComplete(cue) {
-    this.wss.broadcast({ type: 'cue:complete', data: { id: cue.id } });
+    this.wss.broadcast({ type: 'cue:complete', id: cue.id });
     console.log(`[Engine] Cue ${cue.id} Completed`);
     this.activeCues.delete(cue.id);
 
@@ -96,6 +96,7 @@ class PlaybackEngine extends EventEmitter {
     this.loadedCues.clear();
     this.activeCues.forEach(cue => {
       stopPromises.push(cue.triggerStop());
+      this.wss.broadcast({ type: 'cue:stop', id: cue.id });
     });
     await Promise.all(stopPromises);
     this.activeCues.clear();

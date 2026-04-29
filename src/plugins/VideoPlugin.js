@@ -65,7 +65,7 @@ class VideoPlugin extends BasePlugin {
 
     if (this.engine.isFullscreen) {
       extraArgs.push('--fullscreen');
-      extraArgs.push('--fs-screen=' + (this.engine.fullscreenNum ? this.engine.fullscreenNum - 1 : 'all'));
+      extraArgs.push('--fs-screen=' + this.engine.fullscreenNum);
     }
 
     
@@ -79,7 +79,7 @@ class VideoPlugin extends BasePlugin {
     
     this.mpvProcess = spawn('mpv', [
       resolvedFile,
-      '--quiet', '--force-window=yes',
+      '--quiet', '--force-window=yes', '--ontop',
       `--input-ipc-server=${this.ipcPath}`,
       ...extraArgs
     ]);
@@ -181,15 +181,15 @@ Audio :
     }
   }
   
-  getUicolor() {    
+  getUiColor() {    
     return '#990000';  ;
   }
   getUiIcon() { return '🎬'; }
 
-  getUIConfig() {
+  getUiConfig() {
     return {
       tabs: [
-        ...super.getUIConfig().tabs,
+        ...super.getUiConfig().tabs,
         {
           label: 'Content',
           fields: [

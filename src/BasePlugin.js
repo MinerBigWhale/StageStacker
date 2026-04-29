@@ -1,9 +1,82 @@
 const { randomUUID } = require('crypto');
 const path = require('path');
 
+/** BasePlugin
+ * extends this class to create new plugins
+ * add new plugin class to index.js StackManager.registerCueClasses({NewPlugin});
+ * Here is an exemple Plugin
+
+class NewPlugin extends BasePlugin {
+  constructor(config = {}) {
+    super(config);
+  }
+  
+  async start() {
+    throw new Error('start() must be implemented by plugin subclasses.');
+  }
+
+  async stop() {
+    throw new Error('stop() must be implemented by plugin subclasses.');
+  }
+
+  async pause() {
+    throw new Error('pause() must be implemented by plugin subclasses.');
+  }
+
+  async resume() {
+    throw new Error('resume() must be implemented by plugin subclasses.');
+  }
+
+  async stopAudioOnly() {
+    //optional handler: by default stop all
+    this.stop();
+  }
+
+  async stopVideoOnly() {
+    //optional handler: by default stop all
+    this.stop();
+  }
+
+  async setFullscreen() {
+    //optional handler: if the plugin is fullscreen-able
+    return;
+  }
+
+  serialize() {
+    let output = super.serialize();
+    output.type = 'NewPlugin';
+    return {
+      ...output,
+      additional: value
+    }
+  }
+  
+  getUiColor() {    
+    return '#ffffff';  ;
+  }
+  getUiIcon() { return '🔌'; }
+
+  getUiConfig() {
+    return {
+      tabs: [
+        ...super.getUiConfig().tabs,
+        {
+          label: 'New Tab',
+          fields: [
+            { key: 'additional', label: 'Additional Property', type: 'text' }
+          ],
+        }
+      ]
+    };
+  }
+}
+
+module.exports = NewPlugin;
+
+ */
+
 class BasePlugin {
   constructor(config = {}) {
-    // Correction de la syntaxe du générateur d'ID
     this.id = config.id || `cue-${randomUUID().split('-').slice(0, 2).join('-')}`;
     this.type = config.type || 'UnknownPlugin';
     this.name = config.name || 'New Cue';
@@ -194,15 +267,15 @@ class BasePlugin {
     return this[key];
   }
 
-  getUicolor() {
-    return '#636363';;
+  getUiColor() {
+    return '#636363';
   }
 
   getUiIcon() {
     return '';
   }
 
-  getUIConfig() {
+  getUiConfig() {
     return {
       tabs: [
         {

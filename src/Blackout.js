@@ -15,11 +15,12 @@ class Blackout {
     this.mpvProcess = spawn('mpv', [
       '--force-window=yes',
       '--fullscreen',
+      '--ontop',
       '--background-color=#000000',
       '--idle=yes',
       '--keep-open=yes',
-      '--player-operation-mode=pseudo-gui',
       '--no-osc',
+      '--ontop',
       '--no-osd-bar',
       '--title=STAGE-BLACKOUT',
       ...extraArgs
@@ -44,7 +45,7 @@ class Blackout {
   _hideBlackout() {
     if (this.mpvProcess) {
       kill(this.mpvProcess.pid, 'SIGTERM', (err) => {
-        if (err) console.error(`Error stopping blackout process ${this.mpvProcess.pid}:`, err);
+        if (err) console.error(`Error stopping blackout process:`, err);
       });
       this.mpvProcess = null;
     }

@@ -171,7 +171,7 @@ Audio:
     }
   }
 
-  getUicolor() {
+  getUiColor() {
     return '#0041b3';;
   }
 
@@ -179,10 +179,10 @@ Audio:
     return '🔊';
   }
 
-  getUIConfig() {
+  getUiConfig() {
     return {
       tabs: [
-        ...super.getUIConfig().tabs,
+        ...super.getUiConfig().tabs,
         {
           label: 'Audio Content',
           fields: [

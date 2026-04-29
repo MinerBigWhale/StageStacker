@@ -5,9 +5,32 @@ const cors = require('cors');
 const WebSocket = require('ws');
 const http = require('http');
 const StackManager = require('./StackManager');
+const PlaybackEngine = require('./PlaybackEngine');
 const AudioPlugin = require('./plugins/AudioPlugin');
 const VideoPlugin = require('./plugins/VideoPlugin');
-const PlaybackEngine = require('./PlaybackEngine');
+const si = require('systeminformation');
+
+let ipaddresses = [];
+let ipinterval = setInterval(getNetworkInformation, 60000);
+getNetworkInformation();
+
+
+
+async function getNetworkInformation() {
+  const interfaces = await si.networkInterfaces();
+  ipaddresses = [];
+  interfaces.forEach((net,i) => {
+    if (net.internal) return;
+    if (net.operstate == 'down') return;
+    if (net.ip4 == '') return;
+    let name
+    if (net.virtual) name = "v"+i;
+    else if (net.type == 'wireless') name = "w"+i;
+    else if (net.type == 'wired') name = "e"+i;
+    
+      ipaddresses.push({name: name, ip: net.ip4});
+  });
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -64,7 +87,7 @@ app.post('/api/stack/new', async (req, res) => {
       success: true,
       showConfig: loadedStack.showConfig,
       cuesCount: loadedStack.cues.length,
-      cues: loadedStack.cues.map((cue, index) => ({...cue.serialize(), order: index})),
+      cues: loadedStack.cues.map((cue, index) => ({ ...cue.serialize(), order: index, color: cue.getUiColor(), icon: cue.getUiIcon() })),
     };
 
     wss.broadcast({ type: 'stack:loaded', data: response });
@@ -103,7 +126,7 @@ app.get('/api/stack/load/:stack', async (req, res) => {
       success: true,
       showConfig: loadedStack.showConfig,
       cuesCount: loadedStack.cues.length,
-      cues: loadedStack.cues.map((cue, index) => ({...cue.serialize(), order: index})),
+      cues: loadedStack.cues.map((cue, index) => ({ ...cue.serialize(), order: index, color: cue.getUiColor(), icon: cue.getUiIcon() })),
     };
 
     wss.broadcast({ type: 'stack:loaded', data: response });
@@ -115,7 +138,12 @@ app.get('/api/stack/load/:stack', async (req, res) => {
 
 app.get('/api/stack/refresh', (req, res) => {
   if (!loadedStack) return res.status(400).send('No stack loaded');
-  res.json({ success: true, showConfig: loadedStack.showConfig, cuesCount: loadedStack.cues.length, cues: loadedStack.cues.map((cue, index) => ({...cue.serialize(), order: index})) });
+  res.json({ 
+    success: true, 
+    showConfig: loadedStack.showConfig, 
+    cuesCount: loadedStack.cues.length, 
+      cues: loadedStack.cues.map((cue, index) => ({ ...cue.serialize(), order: index, color: cue.getUiColor(), icon: cue.getUiIcon() })),
+  });
 });
 
 app.post('/api/stack/save/:stack', async (req, res) => {
@@ -124,6 +152,7 @@ app.post('/api/stack/save/:stack', async (req, res) => {
     const stackPath = path.join(__dirname, '../stacks', req.params.stack);
     await StackManager.saveShowToStack(loadedStack, stackPath);
     res.json({ success: true, message: 'Saved' });
+    wss.broadcast({ type: 'stack:saved'});
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -134,6 +163,7 @@ app.delete('/api/stack/delete/:stack', async (req, res) => {
     const stackPath = path.join(__dirname, '../stacks', req.params.stack);
     await StackManager.deleteStack(stackPath);
     res.json({ success: true, message: 'Deleted' });
+    wss.broadcast({ type: 'stack:deleted'});
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -145,6 +175,7 @@ app.post('/api/stack/save/', async (req, res) => {
     const stackPath = path.join(__dirname, '../stacks', req.params.stack);
     await StackManager.saveShowToStack(loadedStack, stackPath);
     res.json({ success: true, message: 'Saved' });
+    wss.broadcast({ type: 'stack:saved'});
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -156,7 +187,7 @@ app.post('/api/stack/save/', async (req, res) => {
 app.get('/api/stack/cues/:cueId/uiconfig', (req, res) => {
   const cue = loadedStack?.cues.find(c => c.id === req.params.cueId);
   if (!cue) return res.status(404).send('Cue not found');
-  res.json({ success: true, config: cue.getUIConfig() });
+  res.json({ success: true, config: cue.getUiConfig() });
 });
 
 app.post('/api/stack/upload', (req, res, next) => {
@@ -185,6 +216,7 @@ app.post('/api/stack/cues/:cueId/config/:key', async (req, res) => {
     cue.setConfigFields(req.params.key, req.body.value);
 
     res.json({ success: true, key: req.params.key, value: req.body.value });
+    wss.broadcast({ type: 'cue:changed' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -196,12 +228,24 @@ app.post('/api/stack/cues/add', (req, res) => {
   const newCue = StackManager.addCue(loadedStack, type, extractDir);
   engine.registerCue(newCue); // Lier à l'engine
   res.json({ success: true, cue: newCue.serialize() });
+  wss.broadcast({ type: 'cue:add', cue: newCue.serialize()});
 });
 
 app.post('/api/stack/cues/move', (req, res) => {
   const { from, to } = req.body;
   StackManager.moveCue(loadedStack, from, to);
+  wss.broadcast({ type: 'cue:moved'});
   res.json({ success: true });
+});
+
+app.delete('/api/stack/cues/delete/:cue', (req, res) => {
+  try {
+    StackManager.deletecue(req.params.cue);
+    res.json({ success: true, message: 'Deleted' });
+    wss.broadcast({ type: 'cue:delete', id: req.params.cue});
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 /** 
@@ -297,24 +341,22 @@ app.get('/api/display/fullscreen/:active/:num', (req, res) => {
 app.get('/api', (req, res) => {
   const routes = [];
   
-  // Parcourir les couches du routeur Express
   app._router.stack.forEach((middleware) => {
     if (middleware.route) { 
-      // Routes enregistrées directement sur app (ex: app.get('/api/stack'))
       const path = middleware.route.path;
       const methods = Object.keys(middleware.route.methods).join(', ').toUpperCase();
-      routes.push(`${methods} ${path}`);
+      routes.push(`${path} -- ${methods}`);
     } else if (middleware.name === 'router') { 
-      // Si vous utilisez des express.Router()
       middleware.handle.stack.forEach((handler) => {
         if (handler.route) {
           const path = handler.route.path;
           const methods = Object.keys(handler.route.methods).join(', ').toUpperCase();
-          routes.push(`${methods} ${path}`);
+          routes.push(`${path} -- ${methods}`);
         }
       });
     }
   });
+
 
   res.json({
     name: 'Stage Stacker Backend',
@@ -326,6 +368,7 @@ app.get('/api', (req, res) => {
       url: `ws://${req.hostname}:${PORT}`,
       events: ['stack:loaded', 'cue:started', 'cue:complete', 'cue:error'],
     },
+    ipAddresses : ipaddresses,
     status: {
       stackLoaded: !!loadedStack,
       activeCues: engine.activeCues.size
@@ -350,6 +393,7 @@ server.listen(PORT, () => {
   console.log(`Stage Stacker running on http://localhost:${PORT}`);
   console.log(`WebSocket available at ws://localhost:${PORT}`);
   console.log(`API Documentation at http://localhost:${PORT}/api`);
+  setTimeout(() => { console.log(JSON.stringify(ipaddresses)); },5000);
 });
 
 // Graceful shutdown

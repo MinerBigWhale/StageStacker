@@ -46,9 +46,11 @@ main { display: flex; flex: 1; overflow: hidden; }
 }
 
 /* Grid System */
-.cue-grid-header, .cue-grid-row { display: grid; grid-template-columns: 40px 250px 100px 60px 60px 150px 1fr; gap: 10px; align-items: center; padding: 12px; border-bottom: 1px solid #333; }
+.cue-grid-header, .cue-grid-row { display: grid; grid-template-columns: 60px 250px 100px 60px 60px 150px 1fr; gap: 10px; align-items: center; padding: 12px; border-bottom: 1px solid #333; }
 .cue-grid-header { background: #252525; font-weight: bold; color: #888; text-transform: uppercase; font-size: 0.8rem; }
 .cue-grid-row:hover { background: #1e1e1e; }
+.cue-playing { background: #0b1b29; }
+.cue-playing:hover { background: #0e202b; }
 
 /* Config Panel (Grid span) */
 .config-wrapper { grid-column: 1 / -1; background: #161616; display: none; border-bottom: 1px solid #007bff; }
@@ -75,6 +77,7 @@ main { display: flex; flex: 1; overflow: hidden; }
 .btn-secondary { background: #555; color: white; border: none; padding: 10px; width: 100%; cursor: pointer; border-radius: 4px; }
 .btn-inline-play { background: #28a745; border: none; color: white; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
 .btn-inline-edit { background: #555; border: none; color: white; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
+.btn-inline-delete { background: #993030; border: none; color: white; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
 
 .display-controls { display: flex; gap: 10px; align-items: center; }
 #btn-fullscreen-toggle { padding: 8px 20px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; transition: 0.3s; }

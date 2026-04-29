@@ -21,8 +21,7 @@ socket.onopen = () => {
 socket.onclose = () => {
     console.warn("WebSocket déconnecté. Tentative de reconnexion...");
     statusEl.innerText = "Déconnecté";
-    // Optionnel : relancer la connexion après 3 secondes
-    setTimeout(() => window.location.reload(), 3000);
+    setTimeout(() => window.location.reload(), 5000);
 };
 
 socket.onmessage = (event) => {
@@ -35,6 +34,29 @@ socket.onmessage = (event) => {
         btn.innerText = _isFullscreen ? 'ON AIR' : 'OFF AIR';
         btn.className = _isFullscreen ? 'btn-on' : 'btn-off';
         const slct = document.getElementById('screen-selector').value = _screenNum;
+    }
+    if (data.type === 'cue:started'){
+        const cueRow = document.getElementById(`row-${data.id}`);
+        cueRow.classList.add('cue-playing');
+    }
+    if (data.type === 'cue:complete' || data.type === 'cue:stop'){
+        const cueRow = document.getElementById(`row-${data.id}`);
+        cueRow.classList.remove('cue-playing');
+    }
+    if (data.type === 'stack:loaded'){
+        renderShow(data.data);
+    }
+    if (data.type === 'stack:deleted' || data.type === 'stack:saved'){
+        fetchStacks(data.data);
+    }
+    if (data.type === 'cue:moved' || data.type === 'cue:delete'){
+        refreshUI();
+    }
+    if (data.type === 'cue:add'){
+        renderCue(data.cue);
+    }
+    if (data.type === 'cue:changed'){
+        loadConfig(data.cue.id);
     }
     /*if (data.event === 'audio_peak') {
         const activeIds = payload.map(p => p.cue);
@@ -77,7 +99,6 @@ async function addCue(type) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ type })
     });
-    refreshUI(); 
 }
 
 async function moveCue(index, direction) {
@@ -88,7 +109,6 @@ async function moveCue(index, direction) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ from, to })
     });
-    refreshUI();
 }
 
 async function handleFullscreenToggle() {
@@ -139,7 +159,7 @@ async function fetchStacks() {
             <span class="stack-name">${name}</span>
             <div class="stack-item-delete" onclick="deleteStack(event, '${name}')">✕</div>
         </div>`
-    ).join('');
+    ).join(' ');
 
     refreshUI();
 
@@ -176,10 +196,6 @@ async function createStack() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ name })
     });
-    const data = await res.json();
-    if (data.success) {
-        renderShow(data);
-    }
 }
 
 async function saveStack() {
@@ -223,37 +239,68 @@ function renderShow(data) {
     const showInfo   = document.getElementById('show-info');
     showInfo.innerHTML = `<h2>${data.showConfig.name || ''}</h2> <span>${data.showConfig.filename || ''}</span>`;
 
-    data.cues.forEach((cue, index) => {
-        
-        const row = document.createElement('div');
+    data.cues.forEach((cue, index) => renderCue(cue, index));
+}
+
+function renderCue(cue, index= 0) {
+    let row = document.getElementById(`row-${cue.id}`);
+
+    if (row == undefined) {
+        row = document.createElement('div');
         row.className = 'cue-grid-row';
         row.id = `row-${cue.id}`;
-        row.innerHTML = `
-            
-            <div data-id="${cue.id}" data-index="${index}" class="index-field">${index + 1}
-                <button onclick="moveCue(${index}, -1)">↑</button>
-                <button onclick="moveCue(${index}, 1)">↓</button>
-            </div>
-            <div data-id="${cue.id}" data-value="${cue.name}" class="name-field"><strong>${cue.name}</strong></div>
-            <div data-id="${cue.id}" data-value="${cue.triggerType}" class="triggertype-field">${cue.triggerType}</div>
-            <div data-id="${cue.id}" data-value="${cue.duration}" class="duration-field">00:00.0</div>
-            <div data-id="${cue.id}" data-value="${Math.ceil(cue.delay/1000)}" class="delay-field">${formatMs(cue.delay)}</div>
-            <div>
-                <button class="btn-inline-play" onclick="triggerCue('${cue.id}')">▶</button>
-                <button class="btn-inline-edit" onclick="toggleConfig('${cue.id}')">⚙</button>
-            </div>
-            <div class="waterfall-cell"><div data-index="${index}" data-begin=0 data-end=0 data-id="${cue.id}" class="waterfall-bar" style="left:0; width:0"></div></div>
-        `;
-        
+
         const config = document.createElement('div');
-        config.id = `config-${cue.id}`;
         config.className = 'config-wrapper';
+        config.id = `config-${cue.id}`;
+
+        row.innerHTML = `
+        <div data-id="${cue.id}" data-index="${index}" class="index-field" style="display:flex; flex-direction:row; gap: 10px;">
+            <div style="display:flex; flex-direction:column; gap: 10px;">
+            <button class="btn-secondary" style="height: 20px; padding: 0 10px;" onclick="moveCue(${index}, -1)">↑</button>
+            <button class="btn-secondary" style="height:20px; padding: 0 10px;" onclick="moveCue(${index}, 1)">↓</button>
+            </div>
+            <span style="align-self:center">${index + 1}</span>
+        </div>
+        <div data-id="${cue.id}" data-value="${cue.name}" class="name-field">${cue.icon} <strong class='value'>${cue.name}</strong></div>
+        <div data-id="${cue.id}" data-value="${cue.triggerType}" class="triggertype-field">${cue.triggerType}</div>
+        <div data-id="${cue.id}" data-value="${cue.duration}" class="duration-field">00:00.0</div>
+        <div data-id="${cue.id}" data-value="${Math.ceil(cue.delay/1000)}" class="delay-field">${formatMs(cue.delay)}</div>
+        <div>
+            <button class="btn-inline-play" onclick="triggerCue('${cue.id}')">▶</button>
+            <button class="btn-inline-edit" onclick="toggleConfig('${cue.id}')">⚙</button>
+            <button class="btn-inline-delete" onclick="deleteCue('${cue.id}')">✕</button>
+        </div>
+        <div class="waterfall-cell"><div data-index="${index}" data-begin=0 data-end=0 data-id="${cue.id}" class="waterfall-bar" style="left:0; width:0; background-color:${cue.color}"></div></div>
+        `;
         
         cuesContainer.appendChild(row);
         cuesContainer.appendChild(config);
 
-        setTimeout(() => loadConfig(cue.id), 1000); 
-    });
+    } else {
+        index = row.querySelector(".index-field").dataset.index
+        row.innerHTML = `
+        <div data-id="${cue.id}" data-index="${index}" class="index-field" style="display:flex; flex-direction:row; gap: 10px;">
+            <div style="display:flex; flex-direction:column; gap: 10px;">
+            <button class="btn-secondary" style="height: 20px; padding: 0 10px;" onclick="moveCue(${index}, -1)">↑</button>
+            <button class="btn-secondary" style="height:20px; padding: 0 10px;" onclick="moveCue(${index}, 1)">↓</button>
+            </div>
+            <span style="align-self:center">${index + 1}</span>
+        </div>
+        <div data-id="${cue.id}" data-value="${cue.name}" class="name-field">${cue.icon} <strong class='value'>${cue.name}</strong></div>
+        <div data-id="${cue.id}" data-value="${cue.triggerType}" class="triggertype-field">${cue.triggerType}</div>
+        <div data-id="${cue.id}" data-value="${cue.duration}" class="duration-field">00:00.0</div>
+        <div data-id="${cue.id}" data-value="${Math.ceil(cue.delay/1000)}" class="delay-field">${formatMs(cue.delay)}</div>
+        <div>
+            <button class="btn-inline-play" onclick="triggerCue('${cue.id}')">▶</button>
+            <button class="btn-inline-edit" onclick="toggleConfig('${cue.id}')">⚙</button>
+            <button class="btn-inline-delete" onclick="deleteCue('${cue.id}')">✕</button>
+        </div>
+        <div class="waterfall-cell"><div data-index="${index}" data-begin=0 data-end=0 data-id="${cue.id}" class="waterfall-bar" style="left:0; width:0; background-color:${cue.color}"></div></div>
+        `;
+    }
+
+    setTimeout(() => loadConfig(cue.id), 1000); 
 }
 
 async function toggleConfig(cueId) {
@@ -273,7 +320,7 @@ async function loadConfig(cueId) {
 
     const res = await fetch(`/api/stack/cues/${cueId}/uiconfig`);
     const { config } = await res.json();
-    
+
     panel.innerHTML = `
         <div class="tabs-nav">${config.tabs.map((t,i) => `<button class="tab-btn ${i===0?'active':''}" onclick="switchTab('${cueId}', ${i})">${t.label}</button>`).join('')}</div>
         <div class="tabs-content">${config.tabs.map((t,i) => `<div id="pane-${cueId}-${i}" class="tab-pane ${i===0?'active':''}"></div>`).join('')}</div>
@@ -288,9 +335,9 @@ async function loadConfig(cueId) {
 
         switch (field.key) {
             case 'name':
-                const nameField = document.querySelector(`[data-id="${cueId}"].name-field`);
+                const nameField = document.querySelector(`[data-id="${cueId}"].name-field.value`);
                 if (nameField) {
-                    nameField.innerHTML = `<strong>${value}</strong>`;
+                    nameField.innerHTML = `${value}`;
                     nameField.dataset.value = value;
                 }
                 break;
@@ -333,7 +380,6 @@ async function loadConfig(cueId) {
 }
 
 function getTiming() {
-
     const rows = document.querySelectorAll('.cue-grid-row');
     rows.forEach(row => {
         const index = parseFloat(row.querySelector('.index-field').dataset.index);
