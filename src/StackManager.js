@@ -104,6 +104,38 @@ class StackManager {
     return false;
   }
 
+  static loadShowFromTemp(extractDir ) {
+    try{
+      const showJsonPath = path.join(extractDir, 'show.json');
+      if (!fs.existsSync(showJsonPath)) {
+        throw new Error("Can't load last: show.json missing.");
+      }
+
+      const showConfig = JSON.parse(fs.readFileSync(showJsonPath, 'utf8'));
+
+      const cues = showConfig.cues.map(cueData => {
+        const CueClass = this.getCueClass(cueData.type);
+        if (!CueClass) {
+          throw new Error(`Unknown cue type: ${cueData.type}`);
+        }
+
+        const cue = new CueClass(cueData);
+        cue.setStackContext({ mediaRoot: extractDir, showRoot: extractDir });
+        return cue;
+      });
+
+      return {
+        showConfig,
+        cues,
+        mediaRoot: extractDir ,
+        extractRoot: extractDir ,
+      };
+    } catch (err) {
+      console.warn("error loading last show: " + err);
+      return null;
+    }
+  }
+
   static async loadShowFromStack(stackPath, extractDir) {
     const { showConfig, mediaRoot, extractRoot } = await this.extractStack(stackPath, extractDir);
     showConfig.filename = path.basename(stackPath);

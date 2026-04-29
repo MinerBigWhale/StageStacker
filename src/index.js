@@ -14,8 +14,6 @@ let ipaddresses = [];
 let ipinterval = setInterval(getNetworkInformation, 60000);
 getNetworkInformation();
 
-
-
 async function getNetworkInformation() {
   const interfaces = await si.networkInterfaces();
   ipaddresses = [];
@@ -49,6 +47,7 @@ StackManager.registerCueClasses({
   VideoPlugin,
 });
 
+
 // Server & WebSocket
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
@@ -72,6 +71,23 @@ WebSocket.Server.prototype.broadcast = function(message) {
 /** 
  * STACK MANAGEMENT ROUTES
  */
+
+extractDir = path.join(__dirname, '../.temp/stack-extract');
+loadedStack =  StackManager.loadShowFromTemp(extractDir);
+if (loadedStack){    
+    engine.setContext(loadedStack); 
+    loadedStack.cues.forEach(cue => engine.registerCue(cue));
+
+    const payload = {
+      success: true,
+      showConfig: loadedStack.showConfig,
+      cuesCount: loadedStack.cues.length,
+      cues: loadedStack.cues.map((cue, index) => ({ ...cue.serialize(), order: index, color: cue.getUiColor(), icon: cue.getUiIcon() })),
+    };
+    
+    wss.broadcast({ type: 'stack:loaded', data: payload});
+}
+
 app.post('/api/stack/new', async (req, res) => {
   try { 
     extractDir = path.join(__dirname, '../.temp/stack-extract');
