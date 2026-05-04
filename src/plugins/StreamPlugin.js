@@ -6,10 +6,10 @@ const { read } = require('fs');
 const net = require('net');
 const { randomUUID } = require('crypto');
 
-class VideoPlugin extends BasePlugin {
+class StreamPlugin extends BasePlugin {
   constructor(config = {}) {
     super(config);
-    this._file = config.file;
+    this._url = config.url;
     this.muted = Boolean(config.muted);
     this.mpvProcess = null;
     this.peakValue = null;
@@ -30,7 +30,7 @@ class VideoPlugin extends BasePlugin {
           
           messages.forEach(msg => {
               const response = JSON.parse(msg);
-              console.log(`[VideoPlugin] ${this.id}-ipc:`, response);
+              console.log(`[StreamPlugin] ${this.id}-ipc:`, response);
           });
           client.destroy(); 
       });
@@ -42,23 +42,22 @@ class VideoPlugin extends BasePlugin {
 
   setStackContext({ mediaRoot, showRoot }) {
     super.setStackContext({ mediaRoot, showRoot });
-    if (this._file) this.getMetadata();
+    if (this._url) this.getMetadata();
   }
 
-  get file() {
-    return this._file;
+  get url() {
+    return this._url;
   }
 
-  set file(file) {
-    this._file = file;
+  set url(url) {
+    this._url = url;
     this.getMetadata();
   }
   
   async start() {
-    if (!this._file) return;
+    if (!this._url) return;
     if (this.mpvProcess) return;
 
-    const resolvedFile = this.resolveMediaAsset(this._file);
     const extraArgs = [];
     if (this.loop) extraArgs.push('--loop=inf');
     if (this.muted) extraArgs.push('--no-audio');
@@ -75,10 +74,11 @@ class VideoPlugin extends BasePlugin {
         ? `\\\\.\\pipe\\mpv-${this.id}-${randid}` 
         : `/tmp/mpv-${this.id}-${randid}.sock`;
 
-    console.log(`[VideoPlugin] cue:${this.id} set ipcPath:${this.ipcPath}`)
+    console.log(`[StreamPlugin] cue:${this.id} set ipcPath:${this.ipcPath}`)
     
     this.mpvProcess = spawn('mpv', [
-      resolvedFile,
+      this._url,
+      '--ytdl=yes', '--ytdl-format=bestvideo[height<=?1080][vcodec^=avc1]+bestaudio/best[height<=?1080]', '--hwdec=auto-safe',
       '--quiet', '--force-window=yes', '--ontop',
       `--input-ipc-server=${this.ipcPath}`,
       ...extraArgs
@@ -93,14 +93,14 @@ class VideoPlugin extends BasePlugin {
     });
 
     this.mpvProcess.on('close', (code) => {
-      console.warn(`[VideoPlugin] MPV closed (Exit Code: ${code})`);
+      console.warn(`[StreamPlugin] MPV closed (Exit Code: ${code})`);
       this.mpvProcess = null;
       this.onComplete();
     });
   }
 
   async stop() { 
-    console.log(`[VideoPlugin] Stopping all instances of cue ${this.id}`);
+    console.log(`[StreamPlugin] Stopping all instances of cue ${this.id}`);
     kill(this.mpvProcess.pid, 'SIGTERM', (err) => {
       if (err) console.error(`Error stopping process:`, err);
     });
@@ -129,11 +129,11 @@ class VideoPlugin extends BasePlugin {
 
   serialize() {
     let output = super.serialize();
-    output.type = 'VideoPlugin';
+    output.type = 'StreamPlugin';
     output.feeds = { video: true, audio: !this.muted };
     return {
       ...output,
-      file: this._file,
+      url: this._url,
       muted: this.muted,
       loop: this.loop,
     };
@@ -142,51 +142,45 @@ class VideoPlugin extends BasePlugin {
   
 
   async getMetadata() {
-    if (!this._file) {
-      this.metadata = 'No video file provided.';
+    if (!this._url) {
+      this.metadata = 'No video url provided.';
       return;
     }
 
-    try {
-      const data = await new Promise((resolve, reject) => {
-        ffmpeg.ffprobe(this.resolveMediaAsset(this._file), (err, metadata) => {
-          if (err) return reject(err);
-          resolve(metadata);
-        });
-      });
+       // Use yt-dlp to get detailed info
+    exec(`yt-dlp --dump-json --flat-playlist "${this._url}"`, (error, stdout, stderr) => {
+      if (error) {
+        this.metadata = `yt-dlp Error: ${error.message}`;
+        return;
+      }
 
-      const format = data.format || {};
-      const audio = data.streams.find(s => s.codec_type === 'audio') || {};
-      const video = data.streams.find(s => s.codec_type === 'video') || {};
-      this.duration = parseFloat(format.duration) || 0;
-      const durationText = `${Math.floor(this.duration / 60)}:${Math.floor(this.duration % 60).toString().padStart(2, '0')}`;
+      try {
+        const info = JSON.parse(stdout);
+        
+        // Format the metadata display
+        this.metadata = [
+          `Title: ${info.title || 'unknown'}`,
+          `Uploader: ${info.uploader || info.uploader_id || 'unknown'}`,
+          `Duration: ${info.duration_string || 'Live'}`,
+          `View Count: ${info.view_count || 'N/A'}`,
+          `Upload Date: ${info.upload_date || 'unknown'}`,
+          `Resolution: ${info.width}x${info.height}`,
+          `Format: ${info.format_note || info.ext}`,
+          `Description: ${(info.description || '').substring(0, 100)}...`
+        ].join('\n');
 
-      this.metadata = [
-        `author: ${format.tags?.artist || 'unknown'}`,
-        `title: ${format.tags?.title || 'unknown'}`,
-        `duration: ${durationText}`,
-        `Creation Time: ${format.tags?.creation_time || 'unknown'}`,
-        `Video :`,
-        `\tCodec: ${video.codec_long_name || 'unknown'}`,
-        `\tDimensions: ${video.width ? `${video.width}x${video.height}` : 'unknown'}`,
-        `\tAspect Ratio: ${video.display_aspect_ratio || 'unknown'}`,
-        `\tFrame Rate: ${video.r_frame_rate ? eval(video.r_frame_rate).toFixed(2) : 'unknown'}`,
-        `Audio :`,
-        `\tCodec: ${audio.codec_long_name || 'unknown'}`,
-        `\tSample Rate: ${audio.sample_rate ? audio.sample_rate + ' Hz' : 'unknown'}`,
-        `\tChannels: ${audio.channels ? `${audio.channel_layout} (${audio.channels})` : 'unknown'}`,
-        `\tBit Rate: ${audio.bit_rate || 'unknown'}`
-      ].join('\n');
-
-    } catch (e) {
-      this.metadata = `Fatal Error: ${e.message}`;
-    }
+        // Update internal duration for logic
+        this.duration = info.duration || 0;
+      } catch (e) {
+        this.metadata = `Parsing Error: ${e.message}`;
+      }
+    });
   }
   
   getUiColor() {    
-    return '#990000';  ;
+    return '#059900';  ;
   }
-  getUiIcon() { return '🎬'; }
+  getUiIcon() { return '🌐'; }
 
   getUiConfig() {
     return {
@@ -195,7 +189,7 @@ class VideoPlugin extends BasePlugin {
         {
           label: 'Content',
           fields: [
-            { key: 'file', label: 'Video File', type: 'filePicker', accept: 'video/*' },
+            { key: 'url', label: 'Stream URL', type: 'text' },
             { key: 'loop', label: 'Loop Video', type: 'toggle' },
             { key: 'muted', label: 'Muted', type: 'toggle' }
           ],
@@ -211,4 +205,4 @@ class VideoPlugin extends BasePlugin {
   }
 }
 
-module.exports = VideoPlugin;
+module.exports = StreamPlugin;

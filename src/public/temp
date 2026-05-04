@@ -1,0 +1,17 @@
+
+    {
+      "id": "cue-bd46bdff-90b5",
+      "type": "VideoPlugin",
+      "name": "Monster Cabaret",
+      "triggerType": "manually",
+      "delay": 0,
+      "loop": true,
+      "stopVideo": true,
+      "duration": 0,
+      "feeds": {
+        "video": true,
+        "audio": false
+      },
+      "file": "MONSTER Cabaret HighAlpha top.png",
+      "muted": true
+    },

@@ -9,6 +9,7 @@ const PlaybackEngine = require('./PlaybackEngine');
 const AudioPlugin = require('./plugins/AudioPlugin');
 const VideoPlugin = require('./plugins/VideoPlugin');
 const si = require('systeminformation');
+const BlankPlugin = require('./plugins/BlankPlugin');
 
 let ipaddresses = [];
 let ipinterval = setInterval(getNetworkInformation, 60000);
@@ -45,6 +46,7 @@ let extractDir = null;
 StackManager.registerCueClasses({
   AudioPlugin,
   VideoPlugin,
+  BlankPlugin
 });
 
 
@@ -116,7 +118,7 @@ app.post('/api/stack/new', async (req, res) => {
 app.get('/api/stack/load', (req, res) => {
   try {
     const stacksDir = path.join(__dirname, '../stacks');
-    const stackFiles = fs.readdirSync(stacksDir).filter((file) => file.endsWith('.stack'));
+    const stackFiles = fs.readdirSync(stacksDir).filter((file) => file.endsWith('.stack')).map((file) => file.split('.')[0]);
     res.json({ success: true, stacks: stackFiles });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -125,7 +127,7 @@ app.get('/api/stack/load', (req, res) => {
 
 app.get('/api/stack/load/:stack', async (req, res) => {
   try { 
-    const stackPath = path.join(__dirname, '../stacks', req.params.stack);
+    const stackPath = path.join(__dirname, '../stacks', req.params.stack + ".stack");
     if (!fs.existsSync(stackPath)) return res.status(404).json({ error: 'Not found' });
 
     extractDir = path.join(__dirname, '../.temp/stack-extract');
@@ -165,7 +167,7 @@ app.get('/api/stack/refresh', (req, res) => {
 app.post('/api/stack/save/:stack', async (req, res) => {
   if (!loadedStack) return res.status(400).send('No stack loaded');
   try {
-    const stackPath = path.join(__dirname, '../stacks', req.params.stack);
+    const stackPath = path.join(__dirname, '../stacks', req.params.stack + ".stack");
     await StackManager.saveShowToStack(loadedStack, stackPath);
     res.json({ success: true, message: 'Saved' });
     wss.broadcast({ type: 'stack:saved'});
@@ -176,7 +178,7 @@ app.post('/api/stack/save/:stack', async (req, res) => {
 
 app.delete('/api/stack/delete/:stack', async (req, res) => {
   try {
-    const stackPath = path.join(__dirname, '../stacks', req.params.stack);
+    const stackPath = path.join(__dirname, '../stacks', req.params.stack + ".stack");
     await StackManager.deleteStack(stackPath);
     res.json({ success: true, message: 'Deleted' });
     wss.broadcast({ type: 'stack:deleted'});
@@ -188,7 +190,7 @@ app.delete('/api/stack/delete/:stack', async (req, res) => {
 app.post('/api/stack/save/', async (req, res) => {
   if (!loadedStack) return res.status(400).send('No stack loaded');
   try {
-    const stackPath = path.join(__dirname, '../stacks', req.params.stack);
+    const stackPath = path.join(__dirname, '../stacks', req.params.stack + ".stack");
     await StackManager.saveShowToStack(loadedStack, stackPath);
     res.json({ success: true, message: 'Saved' });
     wss.broadcast({ type: 'stack:saved'});
@@ -230,7 +232,7 @@ app.post('/api/stack/cues/:cueId/config/:key', async (req, res) => {
 
   try {
     cue.setConfigFields(req.params.key, req.body.value);
-
+    StackManager.saveShowToTemp(loadedStack, extractDir);
     res.json({ success: true, key: req.params.key, value: req.body.value });
     wss.broadcast({ type: 'cue:changed' });
   } catch (error) {
@@ -242,7 +244,8 @@ app.post('/api/stack/cues/add', (req, res) => {
   extractDir = path.join(__dirname, '../.temp/stack-extract');
   const { type } = req.body;
   const newCue = StackManager.addCue(loadedStack, type, extractDir);
-  engine.registerCue(newCue); // Lier à l'engine
+  engine.registerCue(newCue); 
+  StackManager.saveShowToTemp(loadedStack, extractDir);
   res.json({ success: true, cue: newCue.serialize() });
   wss.broadcast({ type: 'cue:add', cue: newCue.serialize()});
 });
@@ -250,6 +253,7 @@ app.post('/api/stack/cues/add', (req, res) => {
 app.post('/api/stack/cues/move', (req, res) => {
   const { from, to } = req.body;
   StackManager.moveCue(loadedStack, from, to);
+  StackManager.saveShowToTemp(loadedStack, extractDir);
   wss.broadcast({ type: 'cue:moved'});
   res.json({ success: true });
 });
@@ -257,6 +261,7 @@ app.post('/api/stack/cues/move', (req, res) => {
 app.delete('/api/stack/cues/delete/:cue', (req, res) => {
   try {
     StackManager.deletecue(req.params.cue);
+    StackManager.saveShowToTemp(loadedStack, extractDir);
     res.json({ success: true, message: 'Deleted' });
     wss.broadcast({ type: 'cue:delete', id: req.params.cue});
   } catch (error) {

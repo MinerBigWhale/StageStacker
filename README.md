@@ -32,9 +32,12 @@
 
 ## Prérequis
 
-*   **Node.js** (v16+)
-*   **MPV Player** (Installé et ajouté au PATH système)
-*   **FFmpeg / FFprobe** (Installé pour l'analyse des médias)
+*   **Node.js** (v16+) Permet d'executer le code
+*   **MPV Player** (Installé et ajouté au PATH système) Player utilisé par les Plugin fourni
+*   **FFmpeg / FFprobe** (Installé et ajouté au PATH système) Utilisé pour obtenir les informations des médias
+*   **yt-dlp** (Installé et ajouté au PATH système) Utilisé pour lire des video ou des stream en ligne
+
+Vous pouvez installer tous les prérequis en une commande ```choco install git nodejs-lts mpv ffmpeg yt-dlp -y```
 
 ---
 
@@ -49,6 +52,9 @@ npm install
 npm start
 ```
 Accédez à l'interface sur : `http://localhost:3000`
+Vous pouvez y acceder (Verifiez votre firewall) a distance via l'ip de votre server.
+
+Les medias se jouent sur le server, pas sur le client.
 
 ---
 

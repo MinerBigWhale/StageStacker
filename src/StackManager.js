@@ -68,6 +68,20 @@ class StackManager {
       extractRoot: extractDir ,
     };
   }
+  
+  static async saveShowToTemp(loadedStack, extractDir){
+    const showConfig = { 
+      id: loadedStack.showConfig.id || `show-${randomUUID().split('-').slice(0, 2).join('-')}`,
+      name: loadedStack.showConfig.name,
+      version: loadedStack.showConfig.version,
+      created: loadedStack.showConfig.created,
+      modified: new Date().toISOString(),
+      cues: loadedStack.cues.map(cue => cue.serialize()) 
+    };
+    
+    fs.writeFileSync(path.join(extractDir, 'show.json'), JSON.stringify(showConfig, null, 2), 'utf8');
+
+  }
 
   static async saveShowToStack(loadedStack, destPath) {
     // Collect all media files referenced by cues

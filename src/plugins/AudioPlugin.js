@@ -156,15 +156,17 @@ class AudioPlugin extends BasePlugin {
       this.duration = parseFloat(format.duration) || 0;
       const durationText = `${Math.floor(this.duration / 60)}:${Math.floor(this.duration % 60).toString().padStart(2, '0')}`;
 
-      this.metadata = `Artist: ${format.tags?.artist || 'unknown'}
-Title: ${format.tags?.title || 'unknown'}
-Album: ${format.tags?.album || 'unknown'}
-Duration: ${durationText}
-Audio:
-\tCodec: ${audio.codec_long_name || 'unknown'}
-\tSample Rate: ${audio.sample_rate ? audio.sample_rate + ' Hz' : 'unknown'}
-\tChannels: ${audio.channels ? audio.channel_layout + ' (' + audio.channels + ')' : 'unknown'}
-\tBit Rate: ${format.bit_rate ? (format.bit_rate / 1000).toFixed(0) + ' kbps' : 'unknown'}`;
+      this.metadata = [
+        `Artist: ${format.tags?.artist || 'unknown'}`,
+        `Title: ${format.tags?.title || 'unknown'}`,
+        `Album: ${format.tags?.album || 'unknown'}`,
+        `Duration: ${durationText}`,
+        `Audio:`,
+        `\tCodec: ${audio.codec_long_name || 'unknown'}`,
+        `\tSample Rate: ${audio.sample_rate ? audio.sample_rate + ' Hz' : 'unknown'}`,
+        `\tChannels: ${audio.channels ? audio.channel_layout + ' (' + audio.channels + ')' : 'unknown'}`,
+        `\tBit Rate: ${format.bit_rate ? (format.bit_rate / 1000).toFixed(0) + ' kbps' : 'unknown'}`
+      ].join('\n');
 
     } catch (e) {
       this.metadata = 'Error: ' + e.message;

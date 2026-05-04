@@ -1,0 +1,131 @@
+import { response } from '..';
+
+const BasePlugin = require('../BasePlugin');
+const OBSWebSocket = require('obs-websocket-js').default; // Requires: npm install obs-websocket-js
+
+class ObsControlPlugin extends BasePlugin {
+    constructor(config = {}) {
+        super(config);
+        this._address = config.address || 'ws://127.0.0.1:4455';
+        this._password = config.password || '';
+        this.command = config.command || 'SetCurrentProgramScene';
+        this.commandData = config.commandData || { "sceneName": "Gameplay" };
+        this.obs = new OBSWebSocket();
+        this.timeoutid = null;
+        this.isConnected = false;
+    }
+
+    get address() {
+        return this._address;
+    }
+
+    set address(address) {
+        this._address = address;
+        this.getStatus();
+    }
+
+    get password() {
+        return this._password;
+    }
+
+    set password(password) {
+        this._password = password;
+        this.getStatus();
+    }
+
+    async sendObsCommand(requestType, requestData = {}) {
+        let response = null;
+        try {
+            if (!this.isConnected) {
+                console.warn(`[ObsPlugin] Not connected`);
+                await this.obs.connect(this._address, this._password);
+                this.isConnected = true;
+            }
+            if (this.timeoutid) {
+                clearTimeout(this.timeoutid);
+                this.timeoutid = null;
+            }
+            response = await this.obs.call(requestType, requestData);
+            console.log(`[ObsPlugin] Success:`, response);
+        } catch (error) {
+            console.error(`[ObsPlugin] Command Failed (${requestType}):`, error.message);
+        } finally {
+            this.timeoutid = setTimeout(async () => {
+                await this.obs.disconnect();
+                this.isConnected = false;
+                this.timeoutid = null;
+            }, 5*60*1000);
+        }
+        return response;
+    }
+
+    async start() {
+        this.sendObsCommand(this.command, this.commandData);
+        this.onComplete();
+    }
+
+    async stop() {
+        if (this.timeoutid) {
+            clearTimeout(this.timeoutid);
+            this.timeoutid = null;
+        }
+        if (this.isConnected) {
+            await this.obs.disconnect();
+            this.isConnected = false;
+        }
+    }
+
+    async pause() { 
+        //await this.sendObsCommand('StopStream'); 
+        return;
+    }
+    async resume() { 
+        //await this.sendObsCommand('StartStream'); 
+        return;
+    }
+
+    async getMetadata() {
+        try {
+            const { currentProgramSceneName } = await this.sendObsCommand('GetCurrentProgramScene');
+            const { streams } = await this.sendObsCommand('GetStreamStatus');
+
+            this.metadata = [ 
+                `Active Scene: ${currentProgramSceneName}`,
+                `Streaming: ${streams ? 'LIVE' : 'OFF'}`
+            ].join('\n');
+        } catch (e) {
+            this.metadata = `Info Fetch Error: ${e.message}`;
+        }
+    }
+
+
+    getUiColor() {
+        return '#750099';;
+    }
+    getUiIcon() { return '☯'; }
+
+    getUiConfig() {
+        return {
+            tabs: [
+                ...super.getUiConfig().tabs,
+                {
+                    label: 'OBS Settings',
+                    fields: [
+                        { key: 'address', label: 'WebSocket URL', type: 'text' },
+                        { key: 'password', label: 'Password', type: 'password' },
+                        { key: 'command', label: 'Action (e.g. SetCurrentProgramScene)', type: 'text' },
+                        { key: 'commandData', label: 'JSON Data (e.g. {"sceneName":"Main"})', type: 'text' }
+                    ],
+                },
+                {
+                    label: 'Status',
+                    fields: [
+                        { key: 'metadata', label: 'OBS Info', type: 'multiline', rows: 4, readonly: true }
+                    ],
+                }
+            ]
+        };
+    }
+}
+
+module.exports = ObsControlPlugin;
